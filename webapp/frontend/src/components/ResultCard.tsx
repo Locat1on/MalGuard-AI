@@ -36,7 +36,7 @@ export function ResultCard({ result }: { result: DetectionResult }) {
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-steel">置信度</p>
           <p className="mt-1 font-display text-4xl leading-tight text-ink">
-            {(result.confidence * 100).toFixed(1)}
+            {((result.confidence ?? 0) * 100).toFixed(1)}
             <span className="text-xl text-steel">%</span>
           </p>
         </div>
@@ -54,11 +54,11 @@ export function ResultCard({ result }: { result: DetectionResult }) {
         </div>
       </div>
 
-      {result.attck.length > 0 && (
+      {(result.attck?.length ?? 0) > 0 && (
         <div className="mt-6 border-t border-hairline pt-6">
           <p className="text-xs font-medium uppercase tracking-wide text-steel">ATT&amp;CK 战术映射</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            {result.attck.map((tag) => (
+            {(result.attck ?? []).map((tag) => (
               <span
                 key={tag.technique}
                 className="rounded-md bg-surface-code px-3 py-1.5 font-mono text-xs text-on-dark"
@@ -75,7 +75,7 @@ export function ResultCard({ result }: { result: DetectionResult }) {
       <div className="mt-6 border-t border-hairline pt-6">
         <p className="text-xs font-medium uppercase tracking-wide text-steel">LLM 行为分析报告</p>
         <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-ink-tint">
-          {result.llmReport}
+          {result.llmReport ?? "暂无分析报告"}
         </p>
       </div>
     </div>
