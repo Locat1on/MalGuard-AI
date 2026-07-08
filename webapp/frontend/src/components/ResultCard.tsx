@@ -54,6 +54,23 @@ export function ResultCard({ result }: { result: DetectionResult }) {
         </div>
       </div>
 
+      <div className="mt-6 grid grid-cols-2 gap-6 border-t border-hairline pt-6">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-steel">LightGBM 恶意概率</p>
+          <p className="mt-1 font-display text-2xl leading-tight text-ink">
+            {(result.lgbmScore * 100).toFixed(1)}
+            <span className="text-base text-steel">%</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-steel">MLP 恶意概率</p>
+          <p className="mt-1 font-display text-2xl leading-tight text-ink">
+            {(result.mlpScore * 100).toFixed(1)}
+            <span className="text-base text-steel">%</span>
+          </p>
+        </div>
+      </div>
+
       {(result.attck?.length ?? 0) > 0 && (
         <div className="mt-6 border-t border-hairline pt-6">
           <p className="text-xs font-medium uppercase tracking-wide text-steel">ATT&amp;CK 战术映射</p>

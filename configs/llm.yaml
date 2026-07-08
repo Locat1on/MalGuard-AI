@@ -1,5 +1,5 @@
 provider_base_url: https://openrouter.ai/api/v1/chat/completions
 model: z-ai/glm-5.2
 temperature: 0.3
-max_tokens: 2000
+max_tokens: 3000
 timeout_seconds: 30

@@ -14,6 +14,10 @@ export interface DetectionResult {
   attck: AttckTag[];
   llmReport: string;
   modelAgreement: "agree" | "disagree";
+  lgbmScore: number;
+  mlpScore: number;
+  llmVerdict: Verdict | null;
+  llmConfidence: number | null;
 }
 
 export interface ModelMetric {

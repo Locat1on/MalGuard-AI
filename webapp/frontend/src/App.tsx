@@ -46,6 +46,7 @@ function toHistoryEntry(result: DetectionResult): HistoryEntry {
 function App() {
   const [result, setResult] = useState<DetectionResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [metrics, setMetrics] = useState<ModelMetric[]>([]);
 
@@ -56,12 +57,14 @@ function App() {
   async function handleAnalyze(file: File) {
     setIsAnalyzing(true);
     setResult(null);
+    setError(null);
     try {
       const r = await analyzeFile(file);
       setResult(r);
       setHistory((prev) => [toHistoryEntry(r), ...prev]);
     } catch (err) {
       console.error("Analyze failed:", err);
+      setError(err instanceof Error ? err.message : "未知错误");
     } finally {
       setIsAnalyzing(false);
     }
@@ -76,7 +79,12 @@ function App() {
             <Route
               path="/"
               element={
-                <DetectPage result={result} isAnalyzing={isAnalyzing} onAnalyze={handleAnalyze} />
+                <DetectPage
+                  result={result}
+                  isAnalyzing={isAnalyzing}
+                  error={error}
+                  onAnalyze={handleAnalyze}
+                />
               }
             />
             <Route path="/metrics" element={<MetricsPage metrics={metrics} />} />

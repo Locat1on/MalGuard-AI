@@ -19,6 +19,10 @@ class DetectionResult(BaseModel):
     attck: list[AttckTag]
     llmReport: str
     modelAgreement: Literal["agree", "disagree"]
+    lgbmScore: float
+    mlpScore: float
+    llmVerdict: Verdict | None
+    llmConfidence: float | None
 
 
 class ModelMetric(BaseModel):

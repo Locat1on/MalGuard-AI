@@ -27,7 +27,14 @@ from src.models.mlp import MalwareMLP
 
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
 
-BENIGN_REPORT = "未检测到可疑行为特征，未触发 LLM 深度分析（仅对判定为恶意的样本生成行为分析报告）。"
+class FeatureExtractionError(Exception):
+    """Raised when a file's PE structure could not be parsed into a feature vector.
+
+    Some legitimately-signed files (and some malformed ones) trigger bugs in third-party
+    parsing libraries (e.g. thrember's Authenticode certificate-chain parsing crashes with
+    TypeError on certain certificate stores). Rather than let that surface as a raw 500,
+    the router turns this into an honest 422 with a clear message.
+    """
 
 
 class Predictor:
@@ -65,7 +72,13 @@ class Predictor:
         return self._stub_predict(filename, content)
 
     def _real_predict(self, filename: str, content: bytes) -> DetectionResult:
-        features = extract_features(content).reshape(1, -1)
+        try:
+            features = extract_features(content).reshape(1, -1)
+        except Exception as e:
+            raise FeatureExtractionError(
+                f"无法解析该文件的 PE 结构（{type(e).__name__}: {e}），可能不是有效的 PE 文件，"
+                "或存在第三方解析库尚未处理的特殊结构（例如某些证书链格式）。"
+            ) from e
 
         p_lgbm = float(self.lgbm_model.predict(features)[0])
 
@@ -80,15 +93,22 @@ class Predictor:
         agreement = "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
         verdict = "malicious" if is_malicious else "benign"
 
-        # LLM analysis only runs on flagged samples — never on the hot path for bulk/benign
-        # detection (see CLAUDE.local.md "Design intent").
-        if is_malicious:
-            summary = summarize(content)
-            llm_report = generate_report(content, summary, verdict, confidence)
-            attck_tags = [AttckTag(tactic=t.tactic, technique=t.technique) for t in summary.attck_tags]
-        else:
-            llm_report = BENIGN_REPORT
-            attck_tags = []
+        # The LLM is called for every sample (not just flagged ones) so the result card can
+        # always show a genuine three-way comparison — its verdict is independent (the prompt
+        # never sees the ML models' output) and shown for comparison only, never averaged into
+        # final_prob/confidence above. This trades the earlier "not on the hot path" design
+        # intent (see CLAUDE.local.md) for comparison completeness on every interactive
+        # single-file upload; a true bulk/batch endpoint should still skip this.
+        summary = summarize(content)
+        analysis = generate_report(content, summary)
+        llm_report = analysis.narrative
+        llm_verdict = analysis.verdict
+        llm_confidence = analysis.confidence
+        attck_tags = (
+            [AttckTag(tactic=t.tactic, technique=t.technique) for t in summary.attck_tags]
+            if is_malicious
+            else []
+        )
 
         return DetectionResult(
             filename=filename,
@@ -99,12 +119,18 @@ class Predictor:
             attck=attck_tags,
             llmReport=llm_report,
             modelAgreement=agreement,
+            lgbmScore=round(p_lgbm, 4),
+            mlpScore=round(p_mlp, 4),
+            llmVerdict=llm_verdict,
+            llmConfidence=round(llm_confidence, 4) if llm_confidence is not None else None,
         )
 
     def _stub_predict(self, filename: str, content: bytes) -> DetectionResult:
         digest = hashlib.sha256(content).hexdigest()
         is_malicious = int(digest[:2], 16) % 2 == 0
         confidence = 0.90 + (int(digest[2:4], 16) / 255) * 0.09
+        lgbm_score = confidence if is_malicious else 1 - confidence
+        mlp_score = lgbm_score
 
         return DetectionResult(
             filename=filename,
@@ -125,6 +151,10 @@ class Predictor:
                 "仅用于验证前后端接口契约，不代表任何真实检测能力。"
             ),
             modelAgreement="agree",
+            lgbmScore=round(lgbm_score, 4),
+            mlpScore=round(mlp_score, 4),
+            llmVerdict="malicious" if is_malicious else "benign",
+            llmConfidence=round(confidence, 4),
         )
 
 

@@ -27,19 +27,34 @@ async function mockAnalyze(filename: string): Promise<DetectionResult> {
       ? MOCK_REPORT
       : "未检测到可疑行为链，API 调用模式与已知良性软件基线一致。",
     modelAgreement: "agree",
+    lgbmScore: isMalicious ? 0.968 : 0.009,
+    mlpScore: isMalicious ? 0.978 : 0.009,
+    llmVerdict: isMalicious ? "malicious" : "benign",
+    llmConfidence: isMalicious ? 0.91 : 0.95,
   };
 }
 
+export class DetectionFailedError extends Error {}
+
 export async function analyzeFile(file: File): Promise<DetectionResult> {
+  const form = new FormData();
+  form.append("file", file);
+
+  let res: Response;
   try {
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch("/api/detect", { method: "POST", body: form });
-    if (!res.ok) throw new Error(`backend responded ${res.status}`);
-    return (await res.json()) as DetectionResult;
+    res = await fetch("/api/detect", { method: "POST", body: form });
   } catch {
+    // Backend unreachable (e.g. not running during frontend-only dev) — fall back to mock.
     return mockAnalyze(file.name);
   }
+
+  if (!res.ok) {
+    // Backend is reachable and explicitly rejected/failed this file — surface the real
+    // reason, never silently substitute a fake result for a real error.
+    const body = await res.json().catch(() => null);
+    throw new DetectionFailedError(body?.detail ?? `检测失败（后端返回 ${res.status}）`);
+  }
+  return (await res.json()) as DetectionResult;
 }
 
 const MOCK_METRICS: ModelMetric[] = [

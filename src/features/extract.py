@@ -6,7 +6,14 @@ the same fixed-length vector used to build the training set, so the trained mode
 run directly on it.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import numpy as np
+
+import src.features.thrember_patches  # noqa: F401 — applies the Authenticode parsing fix before use
 from thrember import PEFeatureExtractor
 
 _extractor = PEFeatureExtractor()
@@ -27,8 +34,6 @@ def extract_features(file_bytes: bytes) -> np.ndarray:
 
 if __name__ == "__main__":
     # Smoke test against a real, benign system executable (static parsing only, never executed).
-    from pathlib import Path
-
     sample = Path(r"C:\Windows\System32\notepad.exe").read_bytes()
     vec = extract_features(sample)
     print(f"feature dim: {FEATURE_DIM}")

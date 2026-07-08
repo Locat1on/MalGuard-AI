@@ -12,7 +12,7 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": [
         "-m", "uvicorn", "app.main:app",
-        "--reload", "--reload-dir", "webapp/backend",
+        "--reload", "--reload-dir", "webapp/backend", "--reload-dir", "src",
         "--host", "0.0.0.0", "--port", "8000",
         "--app-dir", "webapp/backend"
       ],
