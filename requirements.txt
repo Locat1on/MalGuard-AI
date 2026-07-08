@@ -1,0 +1,16 @@
+numpy
+pandas
+scikit-learn
+lightgbm
+torch
+tqdm
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+requests
+matplotlib
+pyyaml
+lief
+signify==0.8.1
+git+https://github.com/FutureComputing4AI/EMBER2024.git#egg=thrember

@@ -1,0 +1,26 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Downloaded/generated data (EMBER2024 raw + vectorized, tens of GB)
+/data/
+
+# LLM report cache (regenerable, costs API calls to rebuild)
+checkpoints/llm_cache/
+
+# Node
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+
+# Demo binary that real detectors flag as malicious — see demo_samples/README.md.
+# Not actually malware, but not worth publishing to a public repo either.
+demo_samples/suspicious_demo.exe
+
+# Secrets
+.env
+*.env.local
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db

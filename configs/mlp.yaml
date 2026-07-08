@@ -1,0 +1,7 @@
+embed_dim: 64
+hidden_dims: [128, 64]
+dropout: 0.3
+epochs: 30
+batch_size: 512
+learning_rate: 0.001
+patience: 5
