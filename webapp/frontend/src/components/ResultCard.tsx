@@ -24,9 +24,9 @@ export function ResultCard({ result }: { result: DetectionResult }) {
       <div className="flex items-start justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-steel">检测结果</p>
-          <p className="mt-1 flex items-center gap-2 font-sans text-base font-medium text-ink">
+          <p className="mt-1 flex flex-wrap items-center gap-2 font-sans text-base font-medium text-ink">
             <IconFileText size={16} className="text-steel" />
-            {result.filename}
+            <span className="min-w-0 break-words">{result.filename}</span>
           </p>
         </div>
         <VerdictBadge verdict={result.verdict} />
