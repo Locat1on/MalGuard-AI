@@ -55,6 +55,19 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 
 未配置 API Key 时，检测功能本身不受影响，仅 LLM 报告部分会回退到前端 mock 数据。
 
+### 4. 家族分类模型（可选）
+
+检测结果中的"家族分类"字段由一个独立的 MLP 多分类模型给出（与二分类 MLP 同一套 `src/models/mlp.py` 分支注意力融合架构，仅输出层宽度换成家族类别数），仅对判定为恶意的样本生效。该模型不是必需的：`checkpoints/` 下若没有 `family_mlp.pt` / `family_labels.json`，后端会自动跳过家族预测，`family` 字段返回 `null`，不影响检测本身。
+
+训练（需要先跑过 `train_mlp.py`——家族模型复用它产出的 `checkpoints/scaler.pkl`，不单独拟合；还需要先按上面步骤跑通特征提取，`data/raw/ember2024/family_train.json` 与 `family_test.json` 需已由 `src/data/extract_family_labels.py` 生成）：
+
+```bash
+.venv\Scripts\python.exe src/models/train_mlp.py     # 若 checkpoints/scaler.pkl 尚不存在
+.venv\Scripts\python.exe src/models/train_family.py
+```
+
+EMBER2024 的家族标签长尾分布严重（数据集全量 6787 个家族，多数只有个位数样本），因此该模型只对训练集中样本数 ≥ `configs/family.yaml` 里 `min_count`（默认 30）的家族分开建模，其余全部归入"其他"类；预测为"其他"时，前端不展示家族名（等价于未知家族）。早期版本用 LightGBM 做多分类，原生多分类目标每轮要为每个类别单独建一棵树，440 个类别 × 200 轮 ≈ 8.8 万棵树，实测训练要 2 小时以上；换成 MLP 后输出层只是把最后一层 `Linear` 的输出维度从 1 换成类别数，训练在分钟级完成。
+
 ## 从虚拟机访问
 
 如果需要在虚拟机中访问宿主机上运行的服务：
@@ -70,10 +83,12 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 
 ```
 .
-├── checkpoints/          # 训练好的模型权重（lightgbm.txt, mlp.pt, scaler.pkl）
+├── checkpoints/          # 训练好的模型权重（lightgbm.txt, mlp.pt, scaler.pkl,
+│                         #   family_mlp.pt/family_labels.json 为可选的家族分类模型，复用 scaler.pkl）
 ├── configs/              # 超参数配置（YAML）
 │   ├── lightgbm.yaml
 │   ├── mlp.yaml
+│   ├── family.yaml       # 家族分类模型（可选）
 │   └── llm.yaml          # LLM 模型与参数
 ├── src/
 │   ├── features/         # PE 特征提取（EMBER 2568 维）

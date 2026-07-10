@@ -1,0 +1,11 @@
+embed_dim: 64
+hidden_dims: [128, 64]
+dropout: 0.3
+epochs: 30
+batch_size: 512
+learning_rate: 0.001
+patience: 5
+# Not an MLP hyperparameter — consumed by train_family.py to build the class vocabulary
+# (families with at least this many training samples get their own class; the rest are
+# bucketed into a catch-all "其他" class) before the model's output dimension is computed.
+min_count: 30

@@ -34,11 +34,19 @@ class MalwareMLP(nn.Module):
     hidden_dims/dropout/embed_dim are hyperparameters — see configs/mlp.yaml, loaded via src/config.py.
     """
 
-    def __init__(self, hidden_dims: list[int], dropout: float, embed_dim: int, input_dim: int = FEATURE_DIM):
+    def __init__(
+        self,
+        hidden_dims: list[int],
+        dropout: float,
+        embed_dim: int,
+        num_classes: int = 1,
+        input_dim: int = FEATURE_DIM,
+    ):
         super().__init__()
         if input_dim != FEATURE_DIM:
             raise ValueError(f"input_dim must equal FEATURE_DIM ({FEATURE_DIM}) for feature-group splitting")
 
+        self.num_classes = num_classes
         self.segment_sizes = [dim for _, dim in SEGMENT_DIMS]
         self.num_branches = len(self.segment_sizes)
         self.max_seg_size = max(self.segment_sizes)
@@ -75,7 +83,7 @@ class MalwareMLP(nn.Module):
                 nn.Dropout(dropout),
             ]
             prev_dim = hidden_dim
-        classifier_layers.append(nn.Linear(prev_dim, 1))
+        classifier_layers.append(nn.Linear(prev_dim, num_classes))
         self.classifier = nn.Sequential(*classifier_layers)
 
         self._init_branch_weights()
@@ -89,7 +97,12 @@ class MalwareMLP(nn.Module):
             bound = 1 / math.sqrt(seg_size) if seg_size > 0 else 0
             nn.init.uniform_(self.branch_biases[i], -bound, bound)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_attn: bool = False):
+        """return_attn=True additionally returns the per-branch attention weights
+        (batch, num_branches) — the softmax fusion weights over the 12 feature groups, exposed
+        for the "why did the model decide this" explanation. Off by default so every existing
+        caller (training loops, inference) keeps getting just the logits, and the saved
+        checkpoint stays compatible (this adds no parameters)."""
         batch_size = x.size(0)
 
         # Split input into 12 segments, pad each to max_seg_size, stack into a single tensor
@@ -110,7 +123,12 @@ class MalwareMLP(nn.Module):
 
         # Attention-weighted fusion
         attn_logits = self.attention(branch_embeds).squeeze(-1)  # (batch, num_branches)
-        attn_weights = torch.softmax(attn_logits, dim=1).unsqueeze(-1)  # (batch, num_branches, 1)
-        fused = (branch_embeds * attn_weights).sum(dim=1)  # (batch, embed_dim)
+        attn = torch.softmax(attn_logits, dim=1)  # (batch, num_branches)
+        fused = (branch_embeds * attn.unsqueeze(-1)).sum(dim=1)  # (batch, embed_dim)
 
-        return self.classifier(fused).squeeze(-1)
+        logits = self.classifier(fused)
+        # Binary head collapses to a single logit per sample (matches BCEWithLogitsLoss's
+        # (batch,) target shape); multiclass heads keep the (batch, num_classes) shape for
+        # CrossEntropyLoss.
+        logits = logits.squeeze(-1) if self.num_classes == 1 else logits
+        return (logits, attn) if return_attn else logits

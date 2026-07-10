@@ -1,0 +1,13 @@
+{
+  "top1_accuracy": 0.4374140593598612,
+  "top3_accuracy": 0.5640033001205813,
+  "macro_f1": 0.25956323692487526,
+  "weighted_f1": 0.3510159662059447,
+  "majority_class_baseline_accuracy": 0.1968648854477375,
+  "other_share_test": 0.059190624272809966,
+  "num_classes": 440,
+  "min_count": 30,
+  "train_samples": 372139,
+  "val_samples": 41301,
+  "test_samples": 94542
+}
