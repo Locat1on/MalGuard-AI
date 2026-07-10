@@ -1,13 +1,13 @@
 import json
-from pathlib import Path
 
 from fastapi import APIRouter
 
+from app.predictor import PROJECT_ROOT
 from app.schemas import ModelMetric
 
 router = APIRouter()
 
-METRICS_FILE = Path(__file__).resolve().parents[3].parent / "checkpoints" / "metrics.json"
+METRICS_FILE = PROJECT_ROOT / "checkpoints" / "metrics.json"
 
 STUB_METRICS = [
     ModelMetric(model="LightGBM (EMBER 静态特征基线) [占位数据]", accuracy=0, precision=0, recall=0, f1=0),

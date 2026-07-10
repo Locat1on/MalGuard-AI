@@ -8,6 +8,7 @@ can still be exercised end-to-end from the frontend without a trained model.
 """
 
 import hashlib
+import json
 import pickle
 import sys
 from pathlib import Path
@@ -16,16 +17,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2].parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import lightgbm as lgb
+import numpy as np
 import torch
 
-from app.schemas import AttckTag, DetectionResult
+from app.schemas import AttckTag, DetectionResult, FeatureAttention
 from src.config import load_config
-from src.features.extract import extract_features
+from src.features.extract import SEGMENT_DIMS, extract_features
 from src.llm.feature_summary import summarize
 from src.llm.report import generate_report
 from src.models.mlp import MalwareMLP
 
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
+
+# Human-readable Chinese labels for the 12 EMBER feature groups, so the attention-weight
+# explanation is display-ready without the frontend hardcoding this mapping.
+FEATURE_GROUP_LABELS = {
+    "general": "通用文件属性",
+    "histogram": "字节直方图",
+    "byteentropy": "字节熵分布",
+    "strings": "可打印字符串统计",
+    "header": "PE 头部字段",
+    "section": "节区信息",
+    "imports": "导入表 (API)",
+    "exports": "导出表",
+    "datadirectories": "数据目录",
+    "richheader": "Rich 头",
+    "authenticode": "数字签名",
+    "pefilewarnings": "PE 解析告警",
+}
+
 
 class FeatureExtractionError(Exception):
     """Raised when a file's PE structure could not be parsed into a feature vector.
@@ -39,7 +59,49 @@ class FeatureExtractionError(Exception):
 
 class Predictor:
     def __init__(self) -> None:
+        # Set before either _try_load_* call: the family model needs a device even if the
+        # binary models fail to load (independent optional checkpoints).
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.models_loaded = self._try_load_models()
+        self.family_model_loaded = self._try_load_family_model()
+
+    def _try_load_family_model(self) -> bool:
+        """Optional: the family classifier is a separate, later-added model (see
+        src/models/train_family.py). Detection itself must keep working even if it hasn't been
+        trained yet — `predict()` just reports family=None in that case.
+
+        Reuses the same MalwareMLP architecture and checkpoints/scaler.pkl as the binary
+        detector (see train_family.py for why the scaler is shared rather than refit), just with
+        its output layer widened to the family class count.
+        """
+        family_model_path = CHECKPOINTS_DIR / "family_mlp.pt"
+        family_labels_path = CHECKPOINTS_DIR / "family_labels.json"
+        if not (family_model_path.exists() and family_labels_path.exists()):
+            return False
+
+        with open(family_labels_path, encoding="utf-8") as f:
+            self.family_labels: list[str] = json.load(f)
+
+        family_config = load_config("family")
+        self.family_model = MalwareMLP(
+            hidden_dims=family_config["hidden_dims"],
+            dropout=family_config["dropout"],
+            embed_dim=family_config["embed_dim"],
+            num_classes=len(self.family_labels),
+        ).to(self.device)
+        self.family_model.load_state_dict(torch.load(family_model_path, map_location=self.device))
+        self.family_model.eval()
+        return True
+
+    def _predict_family(self, features_scaled: np.ndarray) -> str | None:
+        with torch.no_grad():
+            logits = self.family_model(torch.tensor(features_scaled, dtype=torch.float32).to(self.device))
+            proba = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        name = self.family_labels[int(proba.argmax())]
+        # The catch-all bucket ("其他", always the last label) means "recognized as malicious
+        # but not one of the well-represented families" — report that honestly as unknown
+        # rather than a fake label.
+        return None if name == self.family_labels[-1] else name
 
     def _try_load_models(self) -> bool:
         lightgbm_path = CHECKPOINTS_DIR / "lightgbm.txt"
@@ -47,8 +109,6 @@ class Predictor:
         scaler_path = CHECKPOINTS_DIR / "scaler.pkl"
         if not (lightgbm_path.exists() and mlp_path.exists() and scaler_path.exists()):
             return False
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.lgbm_model = lgb.Booster(model_file=str(lightgbm_path))
 
@@ -71,7 +131,44 @@ class Predictor:
             return self._real_predict(filename, content)
         return self._stub_predict(filename, content)
 
-    def _real_predict(self, filename: str, content: bytes) -> DetectionResult:
+    def predict_ml_only(self, filename: str, content: bytes) -> DetectionResult:
+        """Batch path: the two ML models (+ optional family) only, no LLM/ATT&CK.
+
+        Batch scanning is the "hot path" the design intent keeps off the LLM (latency + API
+        cost) — see CLAUDE.local.md. `llmReport`/`llmVerdict`/`llmConfidence` come back empty
+        and `attck` empty, so the response schema stays the same as single-file detection while
+        skipping the expensive analysis layer.
+        """
+        if not self.models_loaded:
+            return self._stub_predict(filename, content)
+
+        p_lgbm, p_mlp, is_malicious, family, _ = self._score(content)  # batch skips the attention detail
+        final_prob = (p_lgbm + p_mlp) / 2
+        confidence = final_prob if is_malicious else 1 - final_prob
+        agreement = "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
+        return DetectionResult(
+            filename=filename,
+            verdict="malicious" if is_malicious else "benign",
+            confidence=round(confidence, 4),
+            family=family,
+            gradcamUrl=None,
+            attck=[],
+            llmReport="",
+            modelAgreement=agreement,
+            lgbmScore=round(p_lgbm, 4),
+            mlpScore=round(p_mlp, 4),
+            llmVerdict=None,
+            llmConfidence=None,
+        )
+
+    def _score(self, content: bytes) -> tuple[float, float, bool, str | None, list[FeatureAttention]]:
+        """Feature extraction + both ML models + optional family + MLP attention. No LLM.
+
+        Shared by single-file (`_real_predict`) and batch (`predict_ml_only`) so the two paths
+        can never diverge on how the verdict itself is computed. Returns
+        (p_lgbm, p_mlp, is_malicious, family, feature_attention). The attention list is cheap
+        (already computed inside the same forward pass); the batch path just ignores it.
+        """
         try:
             features = extract_features(content).reshape(1, -1)
         except Exception as e:
@@ -84,11 +181,25 @@ class Predictor:
 
         features_scaled = self.scaler.transform(features)
         with torch.no_grad():
-            logit = self.mlp_model(torch.tensor(features_scaled, dtype=torch.float32).to(self.device))
+            logit, attn = self.mlp_model(
+                torch.tensor(features_scaled, dtype=torch.float32).to(self.device), return_attn=True
+            )
             p_mlp = float(torch.sigmoid(logit).cpu().item())
+            attn_weights = attn[0].cpu().numpy()
+
+        attention = [
+            FeatureAttention(group=name, label=FEATURE_GROUP_LABELS[name], weight=round(float(w), 4))
+            for (name, _), w in zip(SEGMENT_DIMS, attn_weights)
+        ]
+
+        is_malicious = (p_lgbm + p_mlp) / 2 >= 0.5
+        family = self._predict_family(features_scaled) if is_malicious and self.family_model_loaded else None
+        return p_lgbm, p_mlp, is_malicious, family, attention
+
+    def _real_predict(self, filename: str, content: bytes) -> DetectionResult:
+        p_lgbm, p_mlp, is_malicious, family, attention = self._score(content)
 
         final_prob = (p_lgbm + p_mlp) / 2
-        is_malicious = final_prob >= 0.5
         confidence = final_prob if is_malicious else 1 - final_prob
         agreement = "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
         verdict = "malicious" if is_malicious else "benign"
@@ -114,7 +225,7 @@ class Predictor:
             filename=filename,
             verdict=verdict,
             confidence=round(confidence, 4),
-            family=None,
+            family=family,
             gradcamUrl=None,
             attck=attck_tags,
             llmReport=llm_report,
@@ -123,6 +234,7 @@ class Predictor:
             mlpScore=round(p_mlp, 4),
             llmVerdict=llm_verdict,
             llmConfidence=round(llm_confidence, 4) if llm_confidence is not None else None,
+            featureAttention=attention,
         )
 
     def _stub_predict(self, filename: str, content: bytes) -> DetectionResult:
