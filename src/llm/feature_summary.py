@@ -42,7 +42,10 @@ class StructuralSummary:
 
 
 def summarize(file_bytes: bytes) -> StructuralSummary:
-    binary = lief.PE.parse(list(file_bytes))
+    # Pass bytes straight to lief — `list(file_bytes)` would expand the whole file into a
+    # Python list of ints (O(filesize) objects) on every detection. (lief 0.17 accepts bytes
+    # but not bytearray.)
+    binary = lief.PE.parse(file_bytes)
     if binary is None:
         return StructuralSummary(
             file_size=len(file_bytes),
