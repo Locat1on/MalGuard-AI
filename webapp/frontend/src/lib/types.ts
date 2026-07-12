@@ -10,6 +10,7 @@ export interface DetectionResult {
   verdict: Verdict;
   confidence: number;
   family: string | null;
+  familyConfidence: number | null;
   gradcamUrl: string | null;
   attck: AttckTag[];
   llmReport: string;

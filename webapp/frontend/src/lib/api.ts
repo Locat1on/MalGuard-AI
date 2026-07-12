@@ -1,4 +1,4 @@
-import type { DetectionResult, ModelMetric } from "./types";
+import type { DetectionResult, HistoryEntry, ModelMetric, Verdict } from "./types";
 
 const MOCK_REPORT = `该样本在执行过程中表现出典型的持久化与横向探测行为：先通过 RegSetValueExA 在
 HKCU\\...\\Run 下写入自启动项，随后调用 CreateServiceA 注册系统服务，并以
@@ -15,6 +15,7 @@ async function mockAnalyze(filename: string): Promise<DetectionResult> {
     verdict: isMalicious ? "malicious" : "benign",
     confidence: isMalicious ? 0.973 : 0.991,
     family: isMalicious ? "Emotet" : null,
+    familyConfidence: isMalicious ? 0.82 : null,
     gradcamUrl: null,
     attck: isMalicious
       ? [
@@ -57,9 +58,12 @@ export async function analyzeFile(file: File): Promise<DetectionResult> {
   return (await res.json()) as DetectionResult;
 }
 
+// Offline fallback only (shown when /api/metrics is unreachable). Numbers mirror the real
+// checkpoints/metrics.json test-set results so a demo without the backend doesn't display
+// fabricated figures; the "（离线兜底）" marker makes it obvious these aren't live.
 const MOCK_METRICS: ModelMetric[] = [
-  { model: "LightGBM (EMBER 静态特征基线)", accuracy: 0.943, precision: 0.931, recall: 0.918, f1: 0.924 },
-  { model: "MLP 深度模型 (本系统)", accuracy: 0.961, precision: 0.952, recall: 0.947, f1: 0.949 },
+  { model: "LightGBM (EMBER 静态特征基线)（离线兜底）", accuracy: 0.9723, precision: 0.9732, recall: 0.9714, f1: 0.9723 },
+  { model: "MLP 深度模型 (本系统)（离线兜底）", accuracy: 0.9837, precision: 0.9846, recall: 0.9827, f1: 0.9837 },
 ];
 
 export async function fetchMetrics(): Promise<ModelMetric[]> {
@@ -69,5 +73,33 @@ export async function fetchMetrics(): Promise<ModelMetric[]> {
     return (await res.json()) as ModelMetric[];
   } catch {
     return MOCK_METRICS;
+  }
+}
+
+// Backend-persisted detection history (SQLite). Maps the richer HistoryRecord rows down to the
+// HistoryEntry shape the table already renders. Returns [] when the backend is unreachable
+// (frontend-only dev) rather than throwing, so the History page just shows its empty state.
+export async function fetchHistory(limit = 100): Promise<HistoryEntry[]> {
+  try {
+    const res = await fetch(`/api/history?limit=${limit}`);
+    if (!res.ok) throw new Error(`backend responded ${res.status}`);
+    const records = (await res.json()) as Array<{
+      id: number;
+      createdAt: string;
+      filename: string;
+      verdict: Verdict;
+      confidence: number;
+      family: string | null;
+    }>;
+    return records.map((r) => ({
+      id: String(r.id),
+      filename: r.filename,
+      verdict: r.verdict,
+      confidence: r.confidence,
+      family: r.family,
+      timestamp: new Date(r.createdAt).toLocaleString("zh-CN"),
+    }));
+  } catch {
+    return [];
   }
 }

@@ -5,7 +5,7 @@ import { Footer } from "./components/Footer";
 import { DetectPage } from "./pages/DetectPage";
 import { MetricsPage } from "./pages/MetricsPage";
 import { HistoryPage } from "./pages/HistoryPage";
-import { analyzeFile, fetchMetrics } from "./lib/api";
+import { analyzeFile, fetchMetrics, fetchHistory } from "./lib/api";
 import type { DetectionResult, HistoryEntry, ModelMetric } from "./lib/types";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error: string }> {
@@ -52,6 +52,9 @@ function App() {
 
   useEffect(() => {
     fetchMetrics().then(setMetrics);
+    // Load backend-persisted history on mount so the History page survives refreshes and
+    // shows records from prior sessions/batch scans, not just this session's uploads.
+    fetchHistory().then(setHistory);
   }, []);
 
   async function handleAnalyze(file: File) {

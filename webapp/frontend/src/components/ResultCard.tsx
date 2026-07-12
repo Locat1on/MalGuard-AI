@@ -21,15 +21,17 @@ function VerdictBadge({ verdict }: { verdict: DetectionResult["verdict"] }) {
 export function ResultCard({ result }: { result: DetectionResult }) {
   return (
     <div className="rounded-lg border border-hairline-soft bg-canvas p-8 shadow-[0_4px_12px_rgba(0,0,0,0.04)]">
-      <div className="flex items-start justify-between">
-        <div>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-steel">检测结果</p>
           <p className="mt-1 flex flex-wrap items-center gap-2 font-sans text-base font-medium text-ink">
-            <IconFileText size={16} className="text-steel" />
-            <span className="min-w-0 break-words">{result.filename}</span>
+            <IconFileText size={16} className="shrink-0 text-steel" />
+            <span className="min-w-0 break-all">{result.filename}</span>
           </p>
         </div>
-        <VerdictBadge verdict={result.verdict} />
+        <div className="shrink-0">
+          <VerdictBadge verdict={result.verdict} />
+        </div>
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-6 border-t border-hairline pt-6 sm:grid-cols-3">
@@ -41,9 +43,12 @@ export function ResultCard({ result }: { result: DetectionResult }) {
           </p>
         </div>
         {result.family && (
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wide text-steel">家族分类</p>
-            <p className="mt-1 font-display text-4xl leading-tight text-ink">{result.family}</p>
+            <p className="mt-1 font-display text-2xl leading-tight text-ink break-words">{result.family}</p>
+            {result.familyConfidence != null && (
+              <p className="mt-1 text-xs text-steel">疑似 · 置信度 {(result.familyConfidence * 100).toFixed(0)}%</p>
+            )}
           </div>
         )}
         <div>
