@@ -25,6 +25,10 @@ class DetectionResult(BaseModel):
     verdict: Verdict
     confidence: float
     family: str | None
+    # Softmax probability of the reported family (0-1). None whenever family is None (benign,
+    # catch-all, or below the confidence floor). Shown alongside the name so a moderate-confidence
+    # guess reads as "suspected X (62%)" rather than a definitive attribution.
+    familyConfidence: float | None = None
     gradcamUrl: str | None
     attck: list[AttckTag]
     llmReport: str
@@ -51,6 +55,7 @@ class BatchItem(BaseModel):
     verdict: Verdict | None
     confidence: float | None
     family: str | None
+    familyConfidence: float | None
     lgbmScore: float | None
     mlpScore: float | None
     modelAgreement: Literal["agree", "disagree"] | None
@@ -75,6 +80,7 @@ class HistoryRecord(BaseModel):
     verdict: Verdict
     confidence: float
     family: str | None
+    familyConfidence: float | None
     lgbmScore: float
     mlpScore: float
     modelAgreement: Literal["agree", "disagree"]

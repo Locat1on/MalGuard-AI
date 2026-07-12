@@ -41,6 +41,7 @@ def init_db() -> None:
                 verdict        TEXT    NOT NULL,
                 confidence     REAL    NOT NULL,
                 family         TEXT,
+                family_confidence REAL,
                 lgbm_score     REAL    NOT NULL,
                 mlp_score      REAL    NOT NULL,
                 model_agreement TEXT   NOT NULL,
@@ -51,14 +52,19 @@ def init_db() -> None:
             )
             """
         )
+        # Migrate DBs created before family_confidence existed (the file is regenerable, but
+        # an ALTER keeps any accumulated demo history intact rather than requiring a wipe).
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(detections)")}
+        if "family_confidence" not in columns:
+            conn.execute("ALTER TABLE detections ADD COLUMN family_confidence REAL")
 
 
 _INSERT_SQL = """
     INSERT INTO detections (
-        created_at, filename, sha256, source, verdict, confidence, family,
+        created_at, filename, sha256, source, verdict, confidence, family, family_confidence,
         lgbm_score, mlp_score, model_agreement, llm_verdict, llm_confidence,
         llm_report, attck
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -71,6 +77,7 @@ def _row_values(result: DetectionResult, source: str, sha256: str) -> tuple:
         result.verdict,
         result.confidence,
         result.family,
+        result.familyConfidence,
         result.lgbmScore,
         result.mlpScore,
         result.modelAgreement,
@@ -113,6 +120,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "verdict": row["verdict"],
         "confidence": row["confidence"],
         "family": row["family"],
+        "familyConfidence": row["family_confidence"],
         "lgbmScore": row["lgbm_score"],
         "mlpScore": row["mlp_score"],
         "modelAgreement": row["model_agreement"],
@@ -155,7 +163,14 @@ def render_report_html(rec: dict) -> str:
     open it directly and print to PDF. Kept intentionally plain (inline CSS, no JS)."""
     verdict_cn = "恶意" if rec["verdict"] == "malicious" else "良性"
     verdict_color = "#b91c1c" if rec["verdict"] == "malicious" else "#15803d"
-    family = rec["family"] or "—"
+    # Family attribution is a probabilistic guess ("most-resembled known family"), not a forensic
+    # identification — present it as a suspicion with its confidence, never a bald claim.
+    if rec["family"] is None:
+        family_line = "未知（不适用或置信度过低）"
+    else:
+        fam_conf = rec.get("familyConfidence")
+        conf_suffix = f"（置信度 {fam_conf * 100:.0f}%）" if fam_conf is not None else ""
+        family_line = f"疑似 {rec['family']}{conf_suffix}"
 
     if rec["llmVerdict"] is None:
         llm_line = "本次为批量检测，未运行 LLM 分析。"
@@ -207,7 +222,7 @@ def render_report_html(rec: dict) -> str:
     <div>文件名</div><div>{escape(rec['filename'])}</div>
     <div>SHA-256</div><div style="word-break: break-all;">{escape(rec['sha256'])}</div>
     <div>检测来源</div><div>{'单文件' if rec['source'] == 'single' else '批量'}</div>
-    <div>恶意家族</div><div>{escape(family)}</div>
+    <div>疑似家族</div><div>{escape(family_line)}</div>
     <div>LightGBM 概率</div><div>{rec['lgbmScore'] * 100:.1f}%</div>
     <div>MLP 概率</div><div>{rec['mlpScore'] * 100:.1f}%</div>
     <div>模型一致性</div><div>{'一致' if rec['modelAgreement'] == 'agree' else '不一致'}</div>

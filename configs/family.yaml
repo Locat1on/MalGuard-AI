@@ -9,3 +9,8 @@ patience: 5
 # (families with at least this many training samples get their own class; the rest are
 # bucketed into a catch-all "其他" class) before the model's output dimension is computed.
 min_count: 30
+# Inference-time floor (predictor.py, not training): if the top family's softmax probability
+# is below this, report family as unknown (None) rather than asserting a low-confidence guess.
+# Deliberately low — it only suppresses genuinely diffuse predictions; moderate-confidence
+# guesses are still reported, but with their confidence shown so the claim reads as a suspicion.
+family_confidence_floor: 0.3

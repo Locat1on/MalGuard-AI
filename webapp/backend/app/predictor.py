@@ -83,6 +83,7 @@ class Predictor:
             self.family_labels: list[str] = json.load(f)
 
         family_config = load_config("family")
+        self.family_confidence_floor: float = family_config["family_confidence_floor"]
         self.family_model = MalwareMLP(
             hidden_dims=family_config["hidden_dims"],
             dropout=family_config["dropout"],
@@ -93,15 +94,26 @@ class Predictor:
         self.family_model.eval()
         return True
 
-    def _predict_family(self, features_scaled: np.ndarray) -> str | None:
+    def _predict_family(self, features_scaled: np.ndarray) -> tuple[str | None, float | None]:
+        """Return (family_name, confidence) or (None, None).
+
+        The classifier always argmaxes to *some* class, but for a file that doesn't resemble any
+        family it saw in training (e.g. the synthetic demo sample, which is out-of-distribution)
+        that pick is not trustworthy. So we return None when either (a) the pick is the "其他"
+        catch-all, or (b) its softmax probability is below family_confidence_floor. When a name is
+        returned its confidence goes with it, so the UI can show "suspected X (62%)" rather than a
+        bald claim.
+        """
         with torch.no_grad():
             logits = self.family_model(torch.tensor(features_scaled, dtype=torch.float32).to(self.device))
             proba = torch.softmax(logits, dim=1).cpu().numpy()[0]
-        name = self.family_labels[int(proba.argmax())]
-        # The catch-all bucket ("其他", always the last label) means "recognized as malicious
-        # but not one of the well-represented families" — report that honestly as unknown
-        # rather than a fake label.
-        return None if name == self.family_labels[-1] else name
+        idx = int(proba.argmax())
+        confidence = float(proba[idx])
+        name = self.family_labels[idx]
+        # "其他" is always the last label — treat catch-all or low-confidence as unknown.
+        if name == self.family_labels[-1] or confidence < self.family_confidence_floor:
+            return None, None
+        return name, round(confidence, 4)
 
     def _try_load_models(self) -> bool:
         lightgbm_path = CHECKPOINTS_DIR / "lightgbm.txt"
@@ -142,7 +154,8 @@ class Predictor:
         if not self.models_loaded:
             return self._stub_predict(filename, content)
 
-        p_lgbm, p_mlp, is_malicious, family, _ = self._score(content)  # batch skips the attention detail
+        # batch skips the attention detail
+        p_lgbm, p_mlp, is_malicious, family, family_confidence, _ = self._score(content)
         final_prob = (p_lgbm + p_mlp) / 2
         confidence = final_prob if is_malicious else 1 - final_prob
         agreement = "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
@@ -151,6 +164,7 @@ class Predictor:
             verdict="malicious" if is_malicious else "benign",
             confidence=round(confidence, 4),
             family=family,
+            familyConfidence=family_confidence,
             gradcamUrl=None,
             attck=[],
             llmReport="",
@@ -161,13 +175,15 @@ class Predictor:
             llmConfidence=None,
         )
 
-    def _score(self, content: bytes) -> tuple[float, float, bool, str | None, list[FeatureAttention]]:
+    def _score(
+        self, content: bytes
+    ) -> tuple[float, float, bool, str | None, float | None, list[FeatureAttention]]:
         """Feature extraction + both ML models + optional family + MLP attention. No LLM.
 
         Shared by single-file (`_real_predict`) and batch (`predict_ml_only`) so the two paths
         can never diverge on how the verdict itself is computed. Returns
-        (p_lgbm, p_mlp, is_malicious, family, feature_attention). The attention list is cheap
-        (already computed inside the same forward pass); the batch path just ignores it.
+        (p_lgbm, p_mlp, is_malicious, family, family_confidence, feature_attention). The attention
+        list is cheap (already computed inside the same forward pass); the batch path ignores it.
         """
         try:
             features = extract_features(content).reshape(1, -1)
@@ -193,11 +209,15 @@ class Predictor:
         ]
 
         is_malicious = (p_lgbm + p_mlp) / 2 >= 0.5
-        family = self._predict_family(features_scaled) if is_malicious and self.family_model_loaded else None
-        return p_lgbm, p_mlp, is_malicious, family, attention
+        family, family_confidence = (
+            self._predict_family(features_scaled)
+            if is_malicious and self.family_model_loaded
+            else (None, None)
+        )
+        return p_lgbm, p_mlp, is_malicious, family, family_confidence, attention
 
     def _real_predict(self, filename: str, content: bytes) -> DetectionResult:
-        p_lgbm, p_mlp, is_malicious, family, attention = self._score(content)
+        p_lgbm, p_mlp, is_malicious, family, family_confidence, attention = self._score(content)
 
         final_prob = (p_lgbm + p_mlp) / 2
         confidence = final_prob if is_malicious else 1 - final_prob
@@ -226,6 +246,7 @@ class Predictor:
             verdict=verdict,
             confidence=round(confidence, 4),
             family=family,
+            familyConfidence=family_confidence,
             gradcamUrl=None,
             attck=attck_tags,
             llmReport=llm_report,

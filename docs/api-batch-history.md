@@ -24,7 +24,16 @@ interface FeatureAttention {
 featureAttention: FeatureAttention[] | null;  // 单文件检测时有 12 项；批量为 null
 ```
 
-MLP 在融合 12 个特征组时对每组算了一个 softmax 注意力权重，`featureAttention` 就是这组权重——即"模型主要看了哪些特征做出判定"。建议前端按 `weight` 排序画一个条形图（取 Top-N 即可）。其余字段不变。
+MLP 在融合 12 个特征组时对每组算了一个 softmax 注意力权重，`featureAttention` 就是这组权重——即"模型主要看了哪些特征做出判定"。建议前端按 `weight` 排序画一个条形图（取 Top-N 即可）。
+
+再新增 `familyConfidence` 字段，与已有的 `family` 配套：
+
+```ts
+family: string | null;            // 已有：恶意家族名，良性/未知时为 null
+familyConfidence: number | null;  // 新增：该家族的 softmax 置信度 0–1，family 为 null 时也为 null
+```
+
+**重要（展示规范）**：家族分类是"最像哪个已知家族"的概率性推测，**不是取证认定**。请**务必带上置信度展示**，例如「疑似 Wacatac（62%）」，不要显示成光秃秃的「Wacatac」。后端已做低置信兜底：置信度低于阈值（`configs/family.yaml` 的 `family_confidence_floor`）或落入"其他"类时，`family` 直接返回 `null`（即"未知家族"），此时前端不必展示家族。
 
 ## 2. 批量检测（新增）
 
@@ -43,6 +52,7 @@ interface BatchItem {
   verdict: "malicious" | "benign" | null;
   confidence: number | null;
   family: string | null;
+  familyConfidence: number | null;
   lgbmScore: number | null;
   mlpScore: number | null;
   modelAgreement: "agree" | "disagree" | null;
@@ -85,6 +95,7 @@ interface HistoryRecord {
   verdict: "malicious" | "benign";
   confidence: number;
   family: string | null;
+  familyConfidence: number | null;
   lgbmScore: number;
   mlpScore: number;
   modelAgreement: "agree" | "disagree";

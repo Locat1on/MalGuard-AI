@@ -60,7 +60,8 @@ async def detect(file: UploadFile) -> DetectionResult:
 def _error_item(filename: str, error: str) -> BatchItem:
     return BatchItem(
         filename=filename, ok=False, verdict=None, confidence=None, family=None,
-        lgbmScore=None, mlpScore=None, modelAgreement=None, historyId=None, error=error,
+        familyConfidence=None, lgbmScore=None, mlpScore=None, modelAgreement=None,
+        historyId=None, error=error,
     )
 
 
@@ -96,7 +97,8 @@ async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
 
         item = BatchItem(
             filename=filename, ok=True, verdict=result.verdict, confidence=result.confidence,
-            family=result.family, lgbmScore=result.lgbmScore, mlpScore=result.mlpScore,
+            family=result.family, familyConfidence=result.familyConfidence,
+            lgbmScore=result.lgbmScore, mlpScore=result.mlpScore,
             modelAgreement=result.modelAgreement, historyId=None, error=None,
         )
         if predictor.models_loaded:
