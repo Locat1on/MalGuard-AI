@@ -16,9 +16,18 @@ parse-error fallback the original method already uses for other malformed-signat
 
 import io
 
+import lief
 import signify.exceptions
 from signify.authenticode import SignedPEFile
 from thrember.features import AuthenticodeSignature
+
+# Quiet LIEF's console logging. On packed/minimal/crafted PEs (e.g. a tiny msfvenom payload)
+# LIEF prints warnings like "Unable to find the section associated with IMPORT_TABLE" to stderr;
+# parsing still succeeds and our code handles genuine failures via exceptions/None, so these are
+# just noise in the server log. ERROR level keeps real errors while dropping the WARN spam.
+# LIEF logging is a process-global singleton, so this one call covers both the feature extractor
+# and the lief-based LLM feature summary.
+lief.logging.set_level(lief.logging.LEVEL.ERROR)
 
 
 def _patched_raw_features(self, bytez, pe):
