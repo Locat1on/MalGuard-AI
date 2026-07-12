@@ -9,6 +9,9 @@ __pycache__/
 # LLM report cache (regenerable, costs API calls to rebuild)
 checkpoints/llm_cache/
 
+# Ablation run logs (the trained models + metrics json are committed; logs are not)
+checkpoints/ablation/*.log
+
 # Node
 webapp/frontend/node_modules/
 webapp/frontend/dist/

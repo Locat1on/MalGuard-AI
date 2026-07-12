@@ -1,0 +1,62 @@
+{
+  "protocol": {
+    "dataset": "EMBER2024 Win64 static PE features (2568 dimensions)",
+    "train_validation_split": "stratified 90%/10%, random_state=42",
+    "test_set": "official labeled test split; used once after validation checkpoint selection",
+    "seed": 42,
+    "scaler": "existing scaler.pkl, fitted on the fixed training split only",
+    "training": {
+      "epochs": 30,
+      "batch_size": 512,
+      "learning_rate": 0.001,
+      "patience": 5,
+      "hidden_dims": [
+        128,
+        64
+      ],
+      "dropout": 0.3,
+      "embed_dim": 64
+    }
+  },
+  "results": [
+    {
+      "model": "普通 MLP（2568 维直接输入）",
+      "checkpoint": "plain_mlp.pt",
+      "parameters": 181569,
+      "best_validation_f1": 0.993791809037971,
+      "test": {
+        "accuracy": 0.9794083333333333,
+        "precision": 0.9849774915277099,
+        "recall": 0.9736666666666667,
+        "f1": 0.9792894200869995,
+        "roc_auc": 0.9966593063888889
+      }
+    },
+    {
+      "model": "分组 MLP（均值融合）",
+      "checkpoint": "group_mean_mlp.pt",
+      "parameters": 1003905,
+      "best_validation_f1": 0.9933872859037697,
+      "test": {
+        "accuracy": 0.9805416666666666,
+        "precision": 0.9841648335040554,
+        "recall": 0.9768,
+        "f1": 0.9804685866283009,
+        "roc_auc": 0.99714360625
+      }
+    },
+    {
+      "model": "分组 MLP（注意力融合）",
+      "checkpoint": "group_attention_mlp.pt",
+      "parameters": 1006018,
+      "best_validation_f1": 0.9937995508033709,
+      "test": {
+        "accuracy": 0.9835333333333334,
+        "precision": 0.9823595916602933,
+        "recall": 0.98475,
+        "f1": 0.9835533434321575,
+        "roc_auc": 0.9979907998611112
+      }
+    }
+  ]
+}
