@@ -104,6 +104,7 @@ class HealthStatus(BaseModel):
     modelProvenanceVerified: bool | None
     modelProvenanceWarning: str | None
     inferenceConcurrency: int
+    detectionConcurrency: int
     apiKeyRequired: bool
 
 

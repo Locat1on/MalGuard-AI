@@ -16,7 +16,11 @@ from app.auth import (
 from app.predictor import predictor
 from app.schemas import HealthStatus
 from app.settings import settings
-from app.upload_limits import ContentLengthLimitMiddleware, DETECT_REQUEST_LIMITS
+from app.upload_limits import (
+    ContentLengthLimitMiddleware,
+    DETECT_REQUEST_LIMITS,
+    DetectionConcurrencyLimitMiddleware,
+)
 from app.routers import detect, metrics
 from app.routers import history as history_router
 
@@ -31,6 +35,10 @@ app.add_middleware(
     path_limits=DETECT_REQUEST_LIMITS,
 )
 app.add_middleware(
+    DetectionConcurrencyLimitMiddleware,
+    max_active=settings.detection_concurrency,
+)
+app.add_middleware(
     ApiKeyAuthMiddleware,
     api_key=settings.api_key,
     protected_prefixes=PROTECTED_API_PREFIXES,
@@ -40,7 +48,13 @@ app.add_middleware(
     allow_origins=list(settings.cors_origins),
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Process-Time-Ms"],
+    expose_headers=[
+        "Content-Disposition",
+        "Retry-After",
+        "WWW-Authenticate",
+        "X-Process-Time-Ms",
+        "X-Request-ID",
+    ],
 )
 
 app.include_router(detect.router, prefix="/api")
@@ -95,6 +109,7 @@ def _health_status() -> HealthStatus:
         modelProvenanceVerified=predictor.model_provenance_verified,
         modelProvenanceWarning=predictor.model_provenance_warning,
         inferenceConcurrency=predictor.inference_concurrency,
+        detectionConcurrency=settings.detection_concurrency,
         apiKeyRequired=settings.api_key is not None,
     )
 

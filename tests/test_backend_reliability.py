@@ -39,10 +39,15 @@ from app.settings import (
     Settings,
     parse_api_key,
     parse_cors_origins,
+    parse_detection_concurrency,
     parse_history_db_path,
     parse_inference_concurrency,
 )
-from app.upload_limits import MAX_BATCH_REQUEST_BYTES, MAX_SINGLE_REQUEST_BYTES
+from app.upload_limits import (
+    MAX_BATCH_REQUEST_BYTES,
+    MAX_SINGLE_REQUEST_BYTES,
+    DetectionConcurrencyLimitMiddleware,
+)
 
 
 def _result(filename: str = "sample.exe", verdict: str = "malicious") -> DetectionResult:
@@ -68,6 +73,7 @@ class RuntimeSettingsTests(unittest.TestCase):
         settings = Settings.from_environ({})
         self.assertEqual(settings.cors_origins, DEFAULT_CORS_ORIGINS)
         self.assertEqual(settings.inference_concurrency, 1)
+        self.assertEqual(settings.detection_concurrency, 2)
         self.assertIsNone(settings.api_key)
         self.assertEqual(settings.history_db_path, DEFAULT_HISTORY_DB)
         self.assertEqual(
@@ -87,6 +93,11 @@ class RuntimeSettingsTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     parse_inference_concurrency(value)
+        for value in ("0", "33", "two"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_detection_concurrency(value)
+        self.assertEqual(parse_detection_concurrency("3"), 3)
         for value in ("short", "密钥" * 8):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
@@ -199,6 +210,55 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(preflight.status_code, 200)
         self.assertIn("X-API-Key", preflight.headers["access-control-allow-headers"])
 
+    def test_detection_concurrency_rejects_before_body_parsing(self) -> None:
+        limited_app = FastAPI()
+        limited_app.add_middleware(
+            DetectionConcurrencyLimitMiddleware,
+            max_active=1,
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        @limited_app.post("/api/detect")
+        def slow_detect(file: UploadFile) -> dict:
+            entered.set()
+            if not release.wait(timeout=2):
+                raise RuntimeError("test request was not released")
+            return {"filename": file.filename}
+
+        @limited_app.get("/api/health")
+        def unaffected_health() -> dict:
+            return {"ok": True}
+
+        client = TestClient(limited_app)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(
+                client.post,
+                "/api/detect",
+                files={"file": ("first.exe", b"data", "application/octet-stream")},
+            )
+            self.assertTrue(entered.wait(timeout=1))
+            busy = client.post(
+                "/api/detect",
+                content=b"not-a-valid-multipart-body",
+                headers={"Content-Type": "multipart/form-data; boundary=broken"},
+            )
+            health = client.get("/api/health")
+            release.set()
+            first_response = first.result(timeout=2)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(busy.status_code, 429)
+        self.assertEqual(busy.headers["retry-after"], "1")
+        self.assertIn("服务繁忙", busy.json()["detail"])
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(
+            client.post(
+                "/api/detect",
+                files={"file": ("third.exe", b"data", "application/octet-stream")},
+            ).status_code,
+            200,
+        )
     def test_cors_preflight_accepts_only_configured_origin(self) -> None:
         client = TestClient(app)
         allowed = client.options(
@@ -213,6 +273,14 @@ class RuntimeSettingsTests(unittest.TestCase):
             allowed.headers["access-control-allow-origin"],
             "http://127.0.0.1:5173",
         )
+        exposed = client.get(
+            "/api/health",
+            headers={"Origin": "http://127.0.0.1:5173"},
+        ).headers["access-control-expose-headers"]
+        self.assertIn("Content-Disposition", exposed)
+        self.assertIn("Retry-After", exposed)
+        self.assertIn("WWW-Authenticate", exposed)
+        self.assertIn("X-Request-ID", exposed)
 
         rejected = client.options(
             "/api/health",
@@ -496,6 +564,10 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertIn("modelProvenanceVerified", body)
         self.assertIn("modelProvenanceWarning", body)
         self.assertIn("apiKeyRequired", body)
+        self.assertEqual(
+            body["detectionConcurrency"],
+            sys.modules["app.main"].settings.detection_concurrency,
+        )
         self.assertEqual(
             body["inferenceConcurrency"],
             sys.modules["app.main"].predictor.inference_concurrency,

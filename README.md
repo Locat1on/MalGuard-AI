@@ -36,7 +36,8 @@ cd webapp/backend
 后端启动时会校验以下可选环境变量，值不合法会直接拒绝启动：
 
 - `MALGUARD_CORS_ORIGINS`：允许直接调用 API 的前端来源，使用逗号分隔；默认允许 `http://localhost:5173` 和 `http://127.0.0.1:5173`，不接受 `*`。
-- `MALGUARD_INFERENCE_CONCURRENCY`：共享模型可同时执行的推理数，范围 1～8，默认 1。单 GPU 演示建议保留 1；只有经过显存和吞吐压测后再提高。
+- `MALGUARD_INFERENCE_CONCURRENCY`：共享模型可同时执行的前向推理数，范围 1～8，默认 1。单 GPU 演示建议保留 1；只有经过显存和吞吐压测后再提高。
+- `MALGUARD_DETECTION_CONCURRENCY`：每个后端进程允许同时处理的完整检测请求数，范围 1～32，默认 2。超出时在解析上传前返回 429；多个 worker 的总容量为该值乘以 worker 数。
 - `MALGUARD_API_KEY`：可选的 ASCII 密钥，至少 16 字符。配置后，`/api/detect*` 和 `/api/history*` 必须携带 `X-API-Key`；health、ready 和 metrics 保持公开。未配置时维持本地免鉴权模式。
 - `MALGUARD_HISTORY_DB`：可选的 SQLite 路径；相对路径按仓库根目录解析，默认 `data/history.db`。适合把运行数据放到独立磁盘或持久化卷。
 

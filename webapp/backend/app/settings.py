@@ -57,6 +57,21 @@ def parse_inference_concurrency(value: str | None) -> int:
     return concurrency
 
 
+def parse_detection_concurrency(value: str | None) -> int:
+    """Bound expensive upload/extraction/LLM request concurrency per process."""
+    if value is None or not value.strip():
+        return 2
+    try:
+        concurrency = int(value)
+    except ValueError as error:
+        raise ValueError(
+            "MALGUARD_DETECTION_CONCURRENCY 必须是 1 到 32 的整数。"
+        ) from error
+    if not 1 <= concurrency <= 32:
+        raise ValueError("MALGUARD_DETECTION_CONCURRENCY 必须是 1 到 32 的整数。")
+    return concurrency
+
+
 def parse_history_db_path(value: str | None) -> Path:
     """Resolve an optional history DB path without tying storage to model imports."""
     if value is None or not value.strip():
@@ -82,6 +97,7 @@ def parse_api_key(value: str | None) -> str | None:
 class Settings:
     cors_origins: tuple[str, ...]
     inference_concurrency: int
+    detection_concurrency: int
     history_db_path: Path
     api_key: str | None = field(repr=False)
 
@@ -92,6 +108,9 @@ class Settings:
             cors_origins=parse_cors_origins(source.get("MALGUARD_CORS_ORIGINS")),
             inference_concurrency=parse_inference_concurrency(
                 source.get("MALGUARD_INFERENCE_CONCURRENCY")
+            ),
+            detection_concurrency=parse_detection_concurrency(
+                source.get("MALGUARD_DETECTION_CONCURRENCY")
             ),
             history_db_path=parse_history_db_path(
                 source.get("MALGUARD_HISTORY_DB")

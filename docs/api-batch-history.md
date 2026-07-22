@@ -142,6 +142,7 @@ interface HealthStatus {
   modelProvenanceVerified: boolean | null; // 当前三项核心 artifact 是否匹配正式评估哈希
   modelProvenanceWarning: string | null;   // 清单缺失、损坏或模型漂移时的说明
   inferenceConcurrency: number;             // 共享模型允许的并发推理数，默认 1
+  detectionConcurrency: number;             // 每进程完整检测请求并发上限，默认 2
   apiKeyRequired: boolean;                   // 是否要求受保护接口携带 X-API-Key
 }
 ```
@@ -150,7 +151,19 @@ interface HealthStatus {
 
 `modelProvenanceVerified=false` 不会阻断检测，但表示当前加载的 `lightgbm.txt`、`mlp.pt` 或 `scaler.pkl` 与 `evaluation_manifest.json` 不一致，此时指标页不能把现有正式分数视为当前部署模型的成绩；应重新运行 `src/eval/compare_models.py`。值为 `null` 表示缺少或无法读取来源清单。
 
-`inferenceConcurrency` 只描述后端共享模型的并发上限，不是队列长度或前端并发建议。请求等待推理槽位时不会占用 LLM 调用；单 GPU 默认值 1 用于降低显存争用风险。
+`inferenceConcurrency` 只描述共享模型前向并发上限；单 GPU 默认值 1 用于降低显存争用风险。`detectionConcurrency` 则覆盖 multipart 解析、特征提取、模型推理、单文件 LLM 和历史写入的完整请求生命周期，默认每进程 2 个。
+
+超过完整请求上限时，`POST /api/detect` 和 `POST /api/detect/batch` 在读取 multipart 前返回 429：
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+Content-Type: application/json
+
+{"detail":"检测服务繁忙，请稍后重试。"}
+```
+
+后端不维护无限等待队列。该限制是进程内的；启动多个 Uvicorn worker 时，实例总容量约为 `detectionConcurrency × worker 数`，不同主机之间也不共享计数。
 
 ## 7. 历史统计（新增）
 
@@ -201,7 +214,7 @@ X-Process-Time-Ms: 后端处理耗时（毫秒）
 - `/api/health`、`/api/ready`、`/api/metrics` 和 `/api/metrics/provenance` 仍可匿名访问；
 - 缺失或错误密钥返回 401、`WWW-Authenticate: ApiKey` 和 JSON `detail`；
 - CORS `OPTIONS` 预检不要求密钥，`X-API-Key` 可作为跨域请求头；
-- 响应会向跨域前端暴露 `X-Request-ID` 与 `X-Process-Time-Ms`；
+- 响应会向跨域前端暴露 `X-Request-ID`、`X-Process-Time-Ms`、`Retry-After`、`Content-Disposition` 与 `WWW-Authenticate`；
 - 启用密钥时 `/docs` 会显示 `ApiKeyAuth` 授权入口，并只把检测与历史操作标记为受保护。
 
 `GET /api/health` 的 `apiKeyRequired` 用于告诉前端是否需要凭据，不包含密钥本身。报告接口 `/api/history/{id}/report` 也受保护，因此启用鉴权后，前端必须用带请求头的 `fetch` 获取 HTML，再创建临时 Blob URL 打开；普通 `<a href>` 无法附加密钥。密钥不得写入查询参数、日志、错误消息或静态前端构建变量。

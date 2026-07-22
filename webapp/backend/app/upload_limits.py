@@ -1,5 +1,6 @@
 """Upload limits shared by the ASGI boundary and detection routes."""
 
+import threading
 from collections.abc import Mapping
 
 from starlette.responses import JSONResponse
@@ -59,3 +60,51 @@ class ContentLengthLimitMiddleware:
             return
 
         await self.app(scope, receive, send)
+
+
+class DetectionConcurrencyLimitMiddleware:
+    """Reject excess detection requests before multipart parsing and extraction."""
+
+    def __init__(self, app: ASGIApp, max_active: int) -> None:
+        if max_active < 1:
+            raise ValueError("max_active must be positive")
+        self.app = app
+        self.max_active = max_active
+        self._active = 0
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _applies(scope: Scope) -> bool:
+        path = scope.get("path", "")
+        return (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and (path == "/api/detect" or path.startswith("/api/detect/"))
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not self._applies(scope):
+            await self.app(scope, receive, send)
+            return
+
+        with self._lock:
+            if self._active >= self.max_active:
+                accepted = False
+            else:
+                self._active += 1
+                accepted = True
+
+        if not accepted:
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "检测服务繁忙，请稍后重试。"},
+                headers={"Retry-After": "1"},
+            )
+            await response(scope, receive, send)
+            return
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            with self._lock:
+                self._active -= 1
