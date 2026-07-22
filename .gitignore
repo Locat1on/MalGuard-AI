@@ -9,6 +9,12 @@ __pycache__/
 # LLM report cache (regenerable, costs API calls to rebuild)
 checkpoints/llm_cache/
 
+# In-progress family artifacts; deployed files are replaced only after evaluation succeeds.
+checkpoints/.family_mlp.training.pt
+checkpoints/.family_mlp.training.pt.tmp
+checkpoints/.family_labels.training.json
+checkpoints/.family_labels.training.json.tmp
+
 # Ablation run logs (the trained models + metrics json are committed; logs are not)
 checkpoints/ablation/*.log
 

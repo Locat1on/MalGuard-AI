@@ -78,7 +78,7 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 .venv\Scripts\python.exe src/models/train_family.py
 ```
 
-家族训练同样直接从 memmap 按批读取，在训练设备上按批应用同一个 `StandardScaler`，只在 GPU 训练阶段启用 AMP；验证选模和官方测试保持 FP32。脚本在最佳 checkpoint 确定后才打开 test，并写出 `family_training_manifest.json`。440 类混淆矩阵只展示测试集支持度最高的 30 类，其余已建模家族合并为一个可读分组；完整逐类指标仍保留在文本报告中。
+家族训练同样直接从 memmap 按批读取，在训练设备上按批应用同一个 `StandardScaler`，只在 GPU 训练阶段启用 AMP；验证选模和官方测试保持 FP32。最佳 checkpoint 会先写入隐藏暂存文件，并把标签顺序内嵌在模型中；只有官方测试和报告输出均成功后才替换部署中的 `family_mlp.pt`，因此训练中断不会覆盖当前可用模型。脚本随后写出 `family_training_manifest.json`。440 类混淆矩阵只展示测试集支持度最高的 30 类，其余已建模家族合并为一个可读分组；完整逐类指标仍保留在文本报告中。
 
 EMBER2024 的家族标签长尾分布严重（数据集全量 6787 个家族，多数只有个位数样本），因此该模型只对训练集中样本数 ≥ `configs/family.yaml` 里 `min_count`（默认 30）的家族分开建模，其余全部归入"其他"类；预测为"其他"时，前端不展示家族名（等价于未知家族）。早期版本用 LightGBM 做多分类，原生多分类目标每轮要为每个类别单独建一棵树，440 个类别 × 200 轮 ≈ 8.8 万棵树，实测训练要 2 小时以上；换成 MLP 后输出层只是把最后一层 `Linear` 的输出维度从 1 换成类别数，训练在分钟级完成。
 

@@ -32,6 +32,7 @@ from app.predictor import (
     verify_evaluated_artifacts,
 )
 from app.schemas import AttckTag, DetectionResult
+from src.models.family_checkpoint import build_family_checkpoint
 from app.settings import (
     DEFAULT_CORS_ORIGINS,
     DEFAULT_HISTORY_DB,
@@ -322,12 +323,49 @@ class PredictorReliabilityTests(unittest.TestCase):
                     instance = Predictor.__new__(Predictor)
                     instance.family_model_load_error = None
                     instance.device = torch.device("cpu")
-                    with patch("app.predictor.CHECKPOINTS_DIR", checkpoint_dir):
+                    with (
+                        patch("app.predictor.CHECKPOINTS_DIR", checkpoint_dir),
+                        patch("app.predictor.torch.load", return_value={}),
+                    ):
                         self.assertFalse(instance._try_load_family_model())
                     self.assertIn(
                         "family_labels.json",
                         instance.family_model_load_error,
                     )
+
+    def test_bundled_family_checkpoint_loads_without_label_sidecar(self) -> None:
+        predictor_module = sys.modules["app.predictor"]
+        config = {
+            "hidden_dims": [8, 4],
+            "dropout": 0.0,
+            "embed_dim": 4,
+            "family_confidence_floor": 0.3,
+        }
+        labels = ["Example", "其他"]
+        model = predictor_module.MalwareMLP(
+            hidden_dims=config["hidden_dims"],
+            dropout=config["dropout"],
+            embed_dim=config["embed_dim"],
+            num_classes=len(labels),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_dir = Path(directory)
+            torch.save(
+                build_family_checkpoint(model.state_dict(), labels),
+                checkpoint_dir / "family_mlp.pt",
+            )
+            instance = Predictor.__new__(Predictor)
+            instance.family_model_load_error = None
+            instance.device = torch.device("cpu")
+            with (
+                patch("app.predictor.CHECKPOINTS_DIR", checkpoint_dir),
+                patch("app.predictor.load_config", return_value=config),
+            ):
+                self.assertTrue(instance._load_family_model())
+
+        self.assertEqual(instance.family_labels, labels)
+        self.assertEqual(instance.family_confidence_floor, 0.3)
 
     def test_deployed_artifact_provenance_detects_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

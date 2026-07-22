@@ -40,6 +40,11 @@ from src.data.load_features import (
     _load_family_labels,
     _read_memmap,
 )
+from src.models.family_checkpoint import (
+    OTHER_LABEL,
+    build_family_checkpoint,
+    unpack_family_checkpoint,
+)
 from src.models.mlp import MalwareMLP
 from src.models.training_utils import TorchStandardizer
 from src.reproducibility import (
@@ -54,12 +59,14 @@ CHECKPOINT_DIR = Path(__file__).resolve().parents[2] / "checkpoints"
 SCALER_PATH = CHECKPOINT_DIR / "scaler.pkl"
 MODEL_PATH = CHECKPOINT_DIR / "family_mlp.pt"
 LABELS_PATH = CHECKPOINT_DIR / "family_labels.json"
+STAGED_MODEL_PATH = CHECKPOINT_DIR / ".family_mlp.training.pt"
+STAGED_LABELS_PATH = CHECKPOINT_DIR / ".family_labels.training.json"
 METRICS_PATH = CHECKPOINT_DIR / "family_metrics.json"
 CLASSIFICATION_REPORT_PATH = CHECKPOINT_DIR / "family_classification_report.txt"
 DISTRIBUTION_PATH = CHECKPOINT_DIR / "family_distribution.json"
 CONFUSION_PLOT_PATH = CHECKPOINT_DIR / "family_confusion_matrix.png"
 MANIFEST_PATH = CHECKPOINT_DIR / "family_training_manifest.json"
-OTHER_LABEL = "其他"
+
 REMAINDER_LABEL = "其余已建模家族"
 MAX_CONFUSION_CLASSES = 30
 
@@ -274,9 +281,11 @@ def collapse_confusion_classes(
     return collapse(y_true), collapse(y_pred), display_labels
 
 
-def _atomic_save_state_dict(model: nn.Module, path: Path) -> None:
+def _atomic_save_family_checkpoint(
+    model: nn.Module, labels: list[str], path: Path
+) -> None:
     temp_path = path.with_suffix(path.suffix + ".tmp")
-    torch.save(model.state_dict(), temp_path)
+    torch.save(build_family_checkpoint(model.state_dict(), labels), temp_path)
     temp_path.replace(path)
 
 
@@ -356,6 +365,8 @@ def train() -> None:
     best_epoch = 0
     stale_epochs = 0
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    STAGED_MODEL_PATH.unlink(missing_ok=True)
+    STAGED_LABELS_PATH.unlink(missing_ok=True)
 
     for epoch in range(1, config["epochs"] + 1):
         model.train()
@@ -391,7 +402,7 @@ def train() -> None:
             best_f1 = val_f1
             best_epoch = epoch
             stale_epochs = 0
-            _atomic_save_state_dict(model, MODEL_PATH)
+            _atomic_save_family_checkpoint(model, labels, STAGED_MODEL_PATH)
         else:
             stale_epochs += 1
             if stale_epochs >= config["patience"]:
@@ -403,9 +414,15 @@ def train() -> None:
 
     if best_f1 is None:
         raise RuntimeError("training completed without a validation result")
-    model.load_state_dict(
-        torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    staged_checkpoint = torch.load(
+        STAGED_MODEL_PATH, map_location=device, weights_only=True
     )
+    staged_state_dict, staged_labels = unpack_family_checkpoint(
+        staged_checkpoint, STAGED_LABELS_PATH
+    )
+    if staged_labels != labels:
+        raise RuntimeError("staged family checkpoint labels changed during training")
+    model.load_state_dict(staged_state_dict)
 
     del train_loader, val_loader, train_set, val_set, features, targets, families
     gc.collect()
@@ -497,12 +514,18 @@ def train() -> None:
     axis.tick_params(axis="both", labelsize=6)
     fig.tight_layout()
 
-    write_json_atomic(LABELS_PATH, labels)
+    write_json_atomic(STAGED_LABELS_PATH, labels)
     write_json_atomic(METRICS_PATH, metrics)
     write_json_atomic(DISTRIBUTION_PATH, distribution)
     CLASSIFICATION_REPORT_PATH.write_text(report_text, encoding="utf-8")
     fig.savefig(CONFUSION_PLOT_PATH, dpi=160)
     plt.close(fig)
+
+    # Publish only after training, official-test evaluation, and report generation succeed.
+    # The bundled model already contains its label order, so an interruption between these
+    # two replacements cannot make runtime family names refer to the wrong output neurons.
+    STAGED_MODEL_PATH.replace(MODEL_PATH)
+    STAGED_LABELS_PATH.replace(LABELS_PATH)
 
     artifacts = [
         MODEL_PATH,

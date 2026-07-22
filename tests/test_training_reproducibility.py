@@ -10,8 +10,10 @@ from sklearn.preprocessing import StandardScaler
 
 from src.data import load_features
 from src.eval.compare_models import compute_metrics
+from src.models.family_checkpoint import unpack_family_checkpoint
 from src.models.train_family import (
     IndexedFamilyDataset,
+    _atomic_save_family_checkpoint,
     collapse_confusion_classes,
     make_indexed_loader,
     select_family_indices,
@@ -123,6 +125,44 @@ class MemorySafeTrainingTests(unittest.TestCase):
         self.assertEqual(metrics["precision"], 0.5)
         self.assertEqual(metrics["recall"], 0.5)
         self.assertEqual(metrics["f1"], 0.5)
+
+    def test_family_checkpoint_stages_embedded_labels_before_publish(self) -> None:
+        labels = ["Example", "其他"]
+        model = torch.nn.Linear(3, len(labels))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deployed = root / "family_mlp.pt"
+            staged = root / ".family_mlp.training.pt"
+            deployed.write_bytes(b"current-deployed-model")
+
+            _atomic_save_family_checkpoint(model, labels, staged)
+            self.assertEqual(deployed.read_bytes(), b"current-deployed-model")
+
+            checkpoint = torch.load(staged, map_location="cpu", weights_only=True)
+            state_dict, embedded_labels = unpack_family_checkpoint(
+                checkpoint, root / "missing-labels.json"
+            )
+            self.assertEqual(embedded_labels, labels)
+            self.assertEqual(set(state_dict), set(model.state_dict()))
+
+            staged.replace(deployed)
+            published = torch.load(deployed, map_location="cpu", weights_only=True)
+            _, published_labels = unpack_family_checkpoint(
+                published, root / "missing-labels.json"
+            )
+            self.assertEqual(published_labels, labels)
+
+            legacy_labels = root / "family_labels.json"
+            legacy_labels.write_text(
+                json.dumps(labels, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            legacy_state, legacy_vocab = unpack_family_checkpoint(
+                model.state_dict(), legacy_labels
+            )
+            self.assertEqual(set(legacy_state), set(model.state_dict()))
+            self.assertEqual(legacy_vocab, labels)
 
     def test_artifact_hash_and_atomic_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

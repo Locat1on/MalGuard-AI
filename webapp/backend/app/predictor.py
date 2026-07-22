@@ -28,13 +28,13 @@ from src.config import load_config
 from src.features.extract import SEGMENT_DIMS, extract_features
 from src.llm.feature_summary import summarize
 from src.llm.report import generate_report
+from src.models.family_checkpoint import OTHER_LABEL, unpack_family_checkpoint
 from src.models.mlp import MalwareMLP
 from src.reproducibility import sha256_file
 
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
 EVALUATION_MANIFEST_PATH = CHECKPOINTS_DIR / "evaluation_manifest.json"
 
-FAMILY_OTHER_LABEL = "其他"
 
 # Human-readable Chinese labels for the 12 EMBER feature groups, so the fusion-weight
 # signal is display-ready without the frontend hardcoding this mapping.
@@ -53,19 +53,6 @@ FEATURE_GROUP_LABELS = {
     "pefilewarnings": "PE 解析告警",
 }
 
-
-def _validate_family_labels(value: object) -> list[str]:
-    if not isinstance(value, list) or len(value) < 2:
-        raise ValueError(
-            "family_labels.json 必须至少包含一个已知家族和末尾的“其他”类。"
-        )
-    if any(not isinstance(label, str) or not label.strip() for label in value):
-        raise ValueError("family_labels.json 只能包含非空字符串。")
-    if len(set(value)) != len(value):
-        raise ValueError("family_labels.json 包含重复标签。")
-    if value[-1] != FAMILY_OTHER_LABEL:
-        raise ValueError("family_labels.json 的最后一个标签必须是“其他”。")
-    return value
 
 
 def verify_evaluated_artifacts(
@@ -140,12 +127,16 @@ class Predictor:
         """
         family_model_path = CHECKPOINTS_DIR / "family_mlp.pt"
         family_labels_path = CHECKPOINTS_DIR / "family_labels.json"
-        if not (family_model_path.exists() and family_labels_path.exists()):
-            self.family_model_load_error = "缺少 family_mlp.pt 或 family_labels.json。"
+        if not family_model_path.exists():
+            self.family_model_load_error = "缺少 family_mlp.pt。"
             return False
 
-        with open(family_labels_path, encoding="utf-8") as f:
-            self.family_labels = _validate_family_labels(json.load(f))
+        checkpoint = torch.load(
+            family_model_path, map_location=self.device, weights_only=True
+        )
+        state_dict, self.family_labels = unpack_family_checkpoint(
+            checkpoint, family_labels_path
+        )
 
         family_config = load_config("family")
         self.family_confidence_floor: float = family_config["family_confidence_floor"]
@@ -155,9 +146,7 @@ class Predictor:
             embed_dim=family_config["embed_dim"],
             num_classes=len(self.family_labels),
         ).to(self.device)
-        self.family_model.load_state_dict(
-            torch.load(family_model_path, map_location=self.device, weights_only=True)
-        )
+        self.family_model.load_state_dict(state_dict)
         self.family_model.eval()
         return True
 
@@ -167,7 +156,7 @@ class Predictor:
         index = int(probabilities.argmax())
         confidence = float(probabilities[index])
         name = self.family_labels[index]
-        if name == FAMILY_OTHER_LABEL or confidence < self.family_confidence_floor:
+        if name == OTHER_LABEL or confidence < self.family_confidence_floor:
             return None, None
         return name, round(confidence, 4)
 
