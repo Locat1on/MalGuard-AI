@@ -43,6 +43,50 @@ app.add_middleware(
     api_key=settings.api_key,
     protected_prefixes=PROTECTED_API_PREFIXES,
 )
+
+app.include_router(detect.router, prefix="/api")
+app.include_router(metrics.router, prefix="/api")
+app.include_router(history_router.router, prefix="/api")
+if settings.api_key is not None:
+    document_api_key(app, PROTECTED_API_PREFIXES)
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    """Attach a request id and server duration without logging uploaded filenames/content."""
+    request_id = uuid.uuid4().hex
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000
+        REQUEST_LOGGER.exception(
+            "request_id=%s method=%s path=%s status=500 duration_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "服务器内部错误。"},
+        )
+    else:
+        duration_ms = (time.perf_counter() - started) * 1000
+        REQUEST_LOGGER.info(
+            "request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+        )
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.1f}"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
@@ -57,43 +101,6 @@ app.add_middleware(
         "X-Total-Count",
     ],
 )
-
-app.include_router(detect.router, prefix="/api")
-app.include_router(metrics.router, prefix="/api")
-app.include_router(history_router.router, prefix="/api")
-if settings.api_key is not None:
-    document_api_key(app, PROTECTED_API_PREFIXES)
-
-
-@app.middleware("http")
-async def observe_request(request: Request, call_next):
-    """Attach a request id and server duration without logging uploaded filenames/content."""
-    request_id = uuid.uuid4().hex
-    started = time.perf_counter()
-    try:
-        response = await call_next(request)
-    except Exception:
-        duration_ms = (time.perf_counter() - started) * 1000
-        REQUEST_LOGGER.exception(
-            "request_id=%s method=%s path=%s status=500 duration_ms=%.1f",
-            request_id,
-            request.method,
-            request.url.path,
-            duration_ms,
-        )
-        raise
-    duration_ms = (time.perf_counter() - started) * 1000
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.1f}"
-    REQUEST_LOGGER.info(
-        "request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        duration_ms,
-    )
-    return response
 
 
 def _health_status() -> HealthStatus:

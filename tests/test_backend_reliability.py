@@ -126,6 +126,42 @@ class RuntimeSettingsTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 413)
                 self.assertIn("请求体过大", response.json()["detail"])
+                self.assertRegex(
+                    response.headers["X-Request-ID"], r"^[0-9a-f]{32}$"
+                )
+
+    def test_unhandled_error_returns_request_id_and_cors(self) -> None:
+        client = TestClient(app)
+        metrics_module = sys.modules["app.routers.metrics"]
+        main_module = sys.modules["app.main"]
+        with (
+            patch.object(main_module.REQUEST_LOGGER, "exception") as log_error,
+            patch.object(
+                metrics_module,
+                "_load_manifest",
+                side_effect=RuntimeError("sensitive internal detail"),
+            ),
+        ):
+            response = client.get(
+                "/api/metrics",
+                headers={"Origin": DEFAULT_CORS_ORIGINS[0]},
+            )
+
+        log_error.assert_called_once()
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json(), {"detail": "服务器内部错误。"})
+        self.assertNotIn("sensitive internal detail", response.text)
+        self.assertRegex(response.headers["X-Request-ID"], r"^[0-9a-f]{32}$")
+        self.assertGreaterEqual(
+            float(response.headers["X-Process-Time-Ms"]), 0
+        )
+        self.assertEqual(
+            response.headers["access-control-allow-origin"],
+            DEFAULT_CORS_ORIGINS[0],
+        )
+        exposed = response.headers["access-control-expose-headers"]
+        self.assertIn("X-Request-ID", exposed)
+        self.assertIn("X-Process-Time-Ms", exposed)
 
     def test_api_key_protects_routes_and_keeps_preflight_public(self) -> None:
         protected_app = FastAPI()
