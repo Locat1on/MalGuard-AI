@@ -133,6 +133,14 @@ $env:MALGUARD_API_KEY = [BitConverter]::ToString($bytes).Replace("-", "")
 
 恢复不提供在线 API，避免误覆盖正在使用的数据库。恢复时应先完全停止后端，保留当前数据库及同名 `-wal`、`-shm` 边车文件的副本，再将下载的快照放到 `MALGUARD_HISTORY_DB` 指向的位置，最后重启并检查历史列表。不要在后端运行期间直接复制或替换 `history.db`。
 
+## 测试
+
+```powershell
+.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
+测试使用代码生成的确定性最小 PE 夹具，不依赖本地演示二进制、真实恶意样本或 EMBER 原始数据。
+
 ## 项目结构
 
 ```

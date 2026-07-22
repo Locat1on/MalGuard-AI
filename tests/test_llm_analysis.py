@@ -21,6 +21,7 @@ from src.llm.report import (
     _save_cache,
     generate_report,
 )
+from tests.pe_fixture import build_minimal_suspicious_pe
 
 
 class FeatureSummaryTests(unittest.TestCase):
@@ -52,11 +53,10 @@ class FeatureSummaryTests(unittest.TestCase):
         self.assertIsNone(invalid_time)
         self.assertIn("无效", invalid_anomaly)
 
-    def test_real_demo_pe_summary_contains_structural_anomalies(self) -> None:
-        sample = Path("demo_samples/suspicious_demo.exe").read_bytes()
-        summary = summarize(sample)
+    def test_minimal_pe_summary_contains_structural_anomalies(self) -> None:
+        summary = summarize(build_minimal_suspicious_pe())
         self.assertIn(".ex0", summary.high_entropy_sections)
-        self.assertIn("fothk", summary.nonstandard_sections)
+        self.assertIn(".ex0", summary.nonstandard_sections)
         self.assertIsNotNone(summary.compile_time_anomaly)
         self.assertNotIn("5.1.0.0", summary.ip_addresses)
         self.assertIn("编译时间异常", summary.to_prompt_text())

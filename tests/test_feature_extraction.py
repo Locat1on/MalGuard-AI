@@ -2,15 +2,15 @@ import hashlib
 import re
 import unittest
 from collections import OrderedDict
-from pathlib import Path
 
 from src.features.extract import extract_features
+from tests.pe_fixture import build_minimal_suspicious_pe
 from thrember.features import StringExtractor
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEMO_PE = PROJECT_ROOT / "demo_samples" / "suspicious_demo.exe"
-DEMO_FEATURE_SHA256 = "b16a909b1dc7e8b2cefcaba6f69766b8be833945550c37796820e668cceb3f48"
+FIXTURE_FEATURE_SHA256 = (
+    "9328330b3c72ad711e16ce4e1052761dc44361fd946f69a2dba31c3d62cd0106"
+)
 
 
 class StringExtractionPatchTests(unittest.TestCase):
@@ -35,12 +35,12 @@ class StringExtractionPatchTests(unittest.TestCase):
             OrderedDict(sorted(expected.items())),
         )
 
-    def test_demo_pe_feature_vector_contract_is_unchanged(self) -> None:
-        vector = extract_features(DEMO_PE.read_bytes())
+    def test_minimal_pe_feature_vector_contract_is_stable(self) -> None:
+        vector = extract_features(build_minimal_suspicious_pe())
         self.assertEqual(vector.shape, (2568,))
         self.assertEqual(
             hashlib.sha256(vector.tobytes()).hexdigest(),
-            DEMO_FEATURE_SHA256,
+            FIXTURE_FEATURE_SHA256,
         )
 
 
