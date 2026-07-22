@@ -22,13 +22,21 @@ uv pip install -p .venv -r requirements.txt
 # 如需 GPU 加速（可选，默认 CPU 版 torch）
 uv pip install -p .venv torch --index-url https://download.pytorch.org/whl/cu124 --force-reinstall
 
-# 启动后端（须从 webapp/backend 目录进入）
+# 稳定演示（须从 webapp/backend 目录进入）
 cd webapp/backend
-..\..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+..\..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# 仅开发后端代码时使用热重载；不要与上一条命令同时运行
+# ..\..\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 > **Linux / macOS** 把 `..\..\.venv\Scripts\python.exe` 换成 `../../.venv/bin/python`。
 后端启动后可访问 `GET /api/health` 查看可选组件状态，使用 `GET /api/ready` 判断核心模型是否可用于真实检测。checkpoint 缺失或不兼容时，检测接口返回 503；仅纯接口联调时可显式设置 `ALLOW_STUB_PREDICTIONS=1`，正式演示不要启用。
+
+后端启动时会校验以下可选环境变量，值不合法会直接拒绝启动：
+
+- `MALGUARD_CORS_ORIGINS`：允许直接调用 API 的前端来源，使用逗号分隔；默认允许 `http://localhost:5173` 和 `http://127.0.0.1:5173`，不接受 `*`。
+- `MALGUARD_INFERENCE_CONCURRENCY`：共享模型可同时执行的推理数，范围 1～8，默认 1。单 GPU 演示建议保留 1；只有经过显存和吞吐压测后再提高。
 
 ### 2. 前端
 
@@ -94,13 +102,15 @@ MLP 训练保持特征文件为 memmap，增量拟合 `StandardScaler`，并在 
 
 ## 从虚拟机访问
 
-如果需要在虚拟机中访问宿主机上运行的服务：
-```bash
-# 后端已经绑定了 0.0.0.0，无需额外配置
-# 前端 vite.config.ts 已配置 server.host: '0.0.0.0'
+如果需要在虚拟机中访问宿主机上运行的服务，前端 `vite.config.ts` 已绑定 `0.0.0.0`，并通过同源 `/api` 代理到宿主机后端，因此开发模式不需要额外 CORS 配置。在虚拟机浏览器中访问 `http://<宿主机IP>:5173`；宿主机 IP 可通过 `ipconfig`（Windows）或 `ip addr`（Linux）查看。
+
+若前端不经过 Vite/反向代理，而是从另一个来源直接请求 `http://<宿主机IP>:8000`，启动后端前必须显式放行该来源：
+
+```powershell
+$env:MALGUARD_CORS_ORIGINS = "http://<访问前端所用IP或域名>:5173"
 ```
 
-在虚拟机浏览器中访问 `http://<宿主机IP>:5173`。宿主机 IP 可通过 `ipconfig`（Windows）或 `ip addr`（Linux）查看。
+还需确保宿主机防火墙仅对可信网络开放所需端口。不要为了省略配置把 CORS 设置成通配符。
 
 ## 项目结构
 

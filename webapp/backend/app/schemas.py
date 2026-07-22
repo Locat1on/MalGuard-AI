@@ -103,6 +103,7 @@ class HealthStatus(BaseModel):
     familyModelLoadError: str | None
     modelProvenanceVerified: bool | None
     modelProvenanceWarning: str | None
+    inferenceConcurrency: int
 
 
 class HistoryStats(BaseModel):

@@ -12,6 +12,7 @@ import json
 import os
 import pickle
 import sys
+import threading
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2].parent
@@ -22,6 +23,7 @@ import numpy as np
 import torch
 
 from app.schemas import AttckTag, DetectionResult, FeatureAttention
+from app.settings import settings
 from src.config import load_config
 from src.features.extract import SEGMENT_DIMS, extract_features
 from src.llm.feature_summary import summarize
@@ -96,6 +98,8 @@ class Predictor:
         self.family_model_load_error: str | None = None
         self.model_provenance_verified: bool | None = None
         self.model_provenance_warning: str | None = None
+        self.inference_concurrency = settings.inference_concurrency
+        self._inference_slots = threading.BoundedSemaphore(self.inference_concurrency)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.device.type == "cuda":
             torch.set_float32_matmul_precision("high")
@@ -239,30 +243,31 @@ class Predictor:
         if features.ndim != 2 or len(features) != len(filenames):
             raise ValueError("filenames and feature_rows must form an aligned 2D batch")
 
-        lgbm_scores = np.asarray(self.lgbm_model.predict(features), dtype=np.float64)
-        features_scaled = self.scaler.transform(features).astype(np.float32, copy=False)
-        with torch.inference_mode():
-            tensor = torch.from_numpy(features_scaled).to(self.device)
-            mlp_logits = self.mlp_model(tensor)
-            mlp_scores = torch.sigmoid(mlp_logits).float().cpu().numpy().reshape(-1)
+        with self._inference_slots:
+            lgbm_scores = np.asarray(self.lgbm_model.predict(features), dtype=np.float64)
+            features_scaled = self.scaler.transform(features).astype(np.float32, copy=False)
+            with torch.inference_mode():
+                tensor = torch.from_numpy(features_scaled).to(self.device)
+                mlp_logits = self.mlp_model(tensor)
+                mlp_scores = torch.sigmoid(mlp_logits).float().cpu().numpy().reshape(-1)
 
-            ensemble_scores = (lgbm_scores + mlp_scores) / 2
-            malicious_mask = ensemble_scores >= 0.5
-            family_names: list[str | None] = [None] * len(filenames)
-            family_confidences: list[float | None] = [None] * len(filenames)
-            malicious_indices = np.flatnonzero(malicious_mask)
-            if self.family_model_loaded and len(malicious_indices):
-                index_tensor = torch.from_numpy(malicious_indices).to(self.device)
-                family_logits = self.family_model(tensor.index_select(0, index_tensor))
-                family_probabilities = (
-                    torch.softmax(family_logits, dim=1).float().cpu().numpy()
-                )
-                for row_index, probabilities in zip(
-                    malicious_indices, family_probabilities
-                ):
-                    family_names[row_index], family_confidences[row_index] = (
-                        self._decode_family_probability(probabilities)
+                ensemble_scores = (lgbm_scores + mlp_scores) / 2
+                malicious_mask = ensemble_scores >= 0.5
+                family_names: list[str | None] = [None] * len(filenames)
+                family_confidences: list[float | None] = [None] * len(filenames)
+                malicious_indices = np.flatnonzero(malicious_mask)
+                if self.family_model_loaded and len(malicious_indices):
+                    index_tensor = torch.from_numpy(malicious_indices).to(self.device)
+                    family_logits = self.family_model(tensor.index_select(0, index_tensor))
+                    family_probabilities = (
+                        torch.softmax(family_logits, dim=1).float().cpu().numpy()
                     )
+                    for row_index, probabilities in zip(
+                        malicious_indices, family_probabilities
+                    ):
+                        family_names[row_index], family_confidences[row_index] = (
+                            self._decode_family_probability(probabilities)
+                        )
 
         results = []
         for index, filename in enumerate(filenames):
@@ -315,17 +320,24 @@ class Predictor:
         """
         features = self.extract_feature_vector(content).reshape(1, -1)
 
+        with self._inference_slots:
+            p_lgbm = float(self.lgbm_model.predict(features)[0])
 
-        p_lgbm = float(self.lgbm_model.predict(features)[0])
+            features_scaled = self.scaler.transform(features)
+            with torch.inference_mode():
+                tensor = torch.from_numpy(
+                    features_scaled.astype(np.float32, copy=False)
+                ).to(self.device)
+                logit, attn = self.mlp_model(tensor, return_attn=True)
+                p_mlp = float(torch.sigmoid(logit).cpu().item())
+                attn_weights = attn[0].cpu().numpy()
 
-        features_scaled = self.scaler.transform(features)
-        with torch.inference_mode():
-            tensor = torch.from_numpy(
-                features_scaled.astype(np.float32, copy=False)
-            ).to(self.device)
-            logit, attn = self.mlp_model(tensor, return_attn=True)
-            p_mlp = float(torch.sigmoid(logit).cpu().item())
-            attn_weights = attn[0].cpu().numpy()
+            is_malicious = (p_lgbm + p_mlp) / 2 >= 0.5
+            family, family_confidence = (
+                self._predict_family(features_scaled)
+                if is_malicious and self.family_model_loaded
+                else (None, None)
+            )
 
         attention = [
             FeatureAttention(
@@ -335,13 +347,6 @@ class Predictor:
             )
             for (name, _), w in zip(SEGMENT_DIMS, attn_weights)
         ]
-
-        is_malicious = (p_lgbm + p_mlp) / 2 >= 0.5
-        family, family_confidence = (
-            self._predict_family(features_scaled)
-            if is_malicious and self.family_model_loaded
-            else (None, None)
-        )
         return p_lgbm, p_mlp, is_malicious, family, family_confidence, attention
 
     def _real_predict(self, filename: str, content: bytes) -> DetectionResult:

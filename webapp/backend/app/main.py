@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import history
 from app.predictor import predictor
 from app.schemas import HealthStatus
+from app.settings import settings
 from app.routers import detect, metrics
 from app.routers import history as history_router
 
@@ -21,8 +22,8 @@ app = FastAPI(title="MalGuard AI backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_methods=["*"],
+    allow_origins=list(settings.cors_origins),
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -75,6 +76,7 @@ def _health_status() -> HealthStatus:
         familyModelLoadError=predictor.family_model_load_error,
         modelProvenanceVerified=predictor.model_provenance_verified,
         modelProvenanceWarning=predictor.model_provenance_warning,
+        inferenceConcurrency=predictor.inference_concurrency,
     )
 
 

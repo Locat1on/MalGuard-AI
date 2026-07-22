@@ -1,5 +1,8 @@
 import hashlib
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import tempfile
 import unittest
@@ -24,6 +27,12 @@ from app.predictor import (
     verify_evaluated_artifacts,
 )
 from app.schemas import AttckTag, DetectionResult
+from app.settings import (
+    DEFAULT_CORS_ORIGINS,
+    Settings,
+    parse_cors_origins,
+    parse_inference_concurrency,
+)
 
 
 def _result(filename: str = "sample.exe", verdict: str = "malicious") -> DetectionResult:
@@ -42,6 +51,54 @@ def _result(filename: str = "sample.exe", verdict: str = "malicious") -> Detecti
         llmVerdict="benign",
         llmConfidence=0.6,
     )
+
+
+class RuntimeSettingsTests(unittest.TestCase):
+    def test_defaults_and_custom_origins_are_normalized(self) -> None:
+        settings = Settings.from_environ({})
+        self.assertEqual(settings.cors_origins, DEFAULT_CORS_ORIGINS)
+        self.assertEqual(settings.inference_concurrency, 1)
+        self.assertEqual(
+            parse_cors_origins(
+                "http://192.168.56.1:5173/, https://demo.example, "
+                "http://192.168.56.1:5173"
+            ),
+            ("http://192.168.56.1:5173", "https://demo.example"),
+        )
+
+    def test_invalid_runtime_settings_fail_closed(self) -> None:
+        for value in ("*", "ftp://example.test", "https://example.test/path"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_cors_origins(value)
+        for value in ("0", "9", "two"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_inference_concurrency(value)
+
+    def test_cors_preflight_accepts_only_configured_origin(self) -> None:
+        client = TestClient(app)
+        allowed = client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://127.0.0.1:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(
+            allowed.headers["access-control-allow-origin"],
+            "http://127.0.0.1:5173",
+        )
+
+        rejected = client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://unconfigured.example",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertNotIn("access-control-allow-origin", rejected.headers)
 
 
 class PredictorReliabilityTests(unittest.TestCase):
@@ -122,6 +179,7 @@ class PredictorReliabilityTests(unittest.TestCase):
         instance.lgbm_model = FakeLightGBM()
         instance.scaler = IdentityScaler()
         instance.mlp_model = FakeMLP()
+        instance._inference_slots = threading.BoundedSemaphore(1)
 
         results = instance.predict_features_ml_only(
             ["first.exe", "second.exe"],
@@ -135,7 +193,58 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(instance.lgbm_model.last_shape, (2, 2))
         self.assertEqual(instance.mlp_model.last_shape, (2, 2))
         self.assertEqual([result.verdict for result in results], ["malicious", "benign"])
-        self.assertEqual([result.filename for result in results], ["first.exe", "second.exe"])
+        self.assertEqual(
+            [result.filename for result in results],
+            ["first.exe", "second.exe"],
+        )
+
+    def test_shared_models_respect_inference_concurrency_limit(self) -> None:
+        class FakeLightGBM:
+            @staticmethod
+            def predict(features):
+                return np.full(len(features), 0.9)
+
+        class IdentityScaler:
+            @staticmethod
+            def transform(features):
+                return features
+
+        class SlowMLP:
+            def __init__(self) -> None:
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
+
+            def __call__(self, tensor):
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                time.sleep(0.04)
+                with self.lock:
+                    self.active -= 1
+                return torch.zeros((len(tensor), 1), dtype=torch.float32)
+
+        instance = Predictor.__new__(Predictor)
+        instance.models_loaded = True
+        instance.model_load_error = None
+        instance.device = torch.device("cpu")
+        instance.family_model_loaded = False
+        instance.lgbm_model = FakeLightGBM()
+        instance.scaler = IdentityScaler()
+        instance.mlp_model = SlowMLP()
+        instance._inference_slots = threading.BoundedSemaphore(1)
+
+        def predict(index: int) -> DetectionResult:
+            return instance.predict_features_ml_only(
+                [f"sample-{index}.exe"],
+                [np.array([0.1, 0.2], dtype=np.float32)],
+            )[0]
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(predict, range(2)))
+
+        self.assertEqual(instance.mlp_model.max_active, 1)
+        self.assertEqual(len(results), 2)
 
     def test_batch_route_vectorizes_valid_files_and_preserves_order(self) -> None:
         client = TestClient(app)
@@ -242,6 +351,10 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(body["ready"], body["modelsLoaded"])
         self.assertIn("modelProvenanceVerified", body)
         self.assertIn("modelProvenanceWarning", body)
+        self.assertEqual(
+            body["inferenceConcurrency"],
+            sys.modules["app.main"].predictor.inference_concurrency,
+        )
 
         ready_response = client.get("/api/ready")
         self.assertEqual(ready_response.status_code, 200 if body["ready"] else 503)
