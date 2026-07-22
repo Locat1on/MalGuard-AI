@@ -10,7 +10,7 @@ import torch
 from sklearn.preprocessing import StandardScaler
 
 from src.data import load_features
-from src.eval.compare_models import compute_metrics
+from src.eval.compare_models import _publish_evaluation_outputs, compute_metrics
 from src.models.family_checkpoint import unpack_family_checkpoint
 from src.models.train_family import (
     IndexedFamilyDataset,
@@ -131,6 +131,60 @@ class MemorySafeTrainingTests(unittest.TestCase):
         self.assertEqual(metrics["precision"], 0.5)
         self.assertEqual(metrics["recall"], 0.5)
         self.assertEqual(metrics["f1"], 0.5)
+
+    def test_evaluation_outputs_publish_only_after_all_staging_succeeds(self) -> None:
+        class FailingFigure:
+            @staticmethod
+            def savefig(path: Path, dpi: int) -> None:
+                Path(path).write_bytes(b"partial-plot")
+                raise RuntimeError("simulated plot failure")
+
+        class WorkingFigure:
+            @staticmethod
+            def savefig(path: Path, dpi: int) -> None:
+                Path(path).write_bytes(b"new-plot")
+
+        results = [{"model": "verified", "accuracy": 0.9}]
+        manifest = {"results": results, "artifacts": {}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metrics_path = root / "metrics.json"
+            manifest_path = root / "evaluation_manifest.json"
+            plot_path = root / "confusion_matrices.png"
+            metrics_path.write_text('"old-metrics"', encoding="utf-8")
+            manifest_path.write_text('"old-manifest"', encoding="utf-8")
+            plot_path.write_bytes(b"old-plot")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated plot failure"):
+                _publish_evaluation_outputs(
+                    results,
+                    manifest,
+                    FailingFigure(),
+                    metrics_path,
+                    manifest_path,
+                    plot_path,
+                )
+            self.assertEqual(metrics_path.read_text(encoding="utf-8"), '"old-metrics"')
+            self.assertEqual(
+                manifest_path.read_text(encoding="utf-8"), '"old-manifest"'
+            )
+            self.assertEqual(plot_path.read_bytes(), b"old-plot")
+            self.assertEqual(list(root.glob(".*.evaluation*")), [])
+
+            _publish_evaluation_outputs(
+                results,
+                manifest,
+                WorkingFigure(),
+                metrics_path,
+                manifest_path,
+                plot_path,
+            )
+            self.assertEqual(json.loads(metrics_path.read_text(encoding="utf-8")), results)
+            self.assertEqual(
+                json.loads(manifest_path.read_text(encoding="utf-8")),
+                manifest,
+            )
+            self.assertEqual(plot_path.read_bytes(), b"new-plot")
 
     def test_lightgbm_atomic_save_preserves_deployed_model_on_failure(self) -> None:
         class FailingBooster:

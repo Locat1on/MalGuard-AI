@@ -88,6 +88,37 @@ def predict_mlp(
     return scores
 
 
+def _staged_evaluation_path(path: Path) -> Path:
+    return path.with_name(f".{path.stem}.evaluation{path.suffix}")
+
+
+def _publish_evaluation_outputs(
+    results: list[dict],
+    manifest: dict,
+    figure,
+    metrics_path: Path = METRICS_PATH,
+    manifest_path: Path = MANIFEST_PATH,
+    plot_path: Path = CONFUSION_PLOT_PATH,
+) -> None:
+    """Publish the manifest last so it is the completion marker for one evaluation."""
+    staged_metrics = _staged_evaluation_path(metrics_path)
+    staged_manifest = _staged_evaluation_path(manifest_path)
+    staged_plot = _staged_evaluation_path(plot_path)
+    staged_paths = (staged_metrics, staged_manifest, staged_plot)
+    try:
+        write_json_atomic(staged_metrics, results)
+        figure.savefig(staged_plot, dpi=160)
+        write_json_atomic(staged_manifest, manifest)
+
+        staged_metrics.replace(metrics_path)
+        staged_plot.replace(plot_path)
+        staged_manifest.replace(manifest_path)
+    finally:
+        for path in staged_paths:
+            path.unlink(missing_ok=True)
+            path.with_suffix(path.suffix + ".tmp").unlink(missing_ok=True)
+
+
 def main() -> None:
     source_git = git_manifest()
     features, targets = _read_memmap(DATA_DIR, "test")
@@ -113,7 +144,6 @@ def main() -> None:
     for row in results:
         print(row)
 
-    write_json_atomic(METRICS_PATH, results)
     checkpoints = [
         CHECKPOINT_DIR / "lightgbm.txt",
         CHECKPOINT_DIR / "mlp.pt",
@@ -143,8 +173,6 @@ def main() -> None:
         "runtime": runtime_manifest(),
         "git": source_git,
     }
-    write_json_atomic(MANIFEST_PATH, manifest)
-
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     plot_titles = ["LightGBM", "MLP", "Ensemble"]
     for axis, title, (_, scores) in zip(axes, plot_titles, evaluated):
@@ -157,8 +185,10 @@ def main() -> None:
         )
         axis.set_title(title)
     fig.tight_layout()
-    fig.savefig(CONFUSION_PLOT_PATH, dpi=160)
-    plt.close(fig)
+    try:
+        _publish_evaluation_outputs(results, manifest, fig)
+    finally:
+        plt.close(fig)
     print(f"saved metrics to {METRICS_PATH}")
     print(f"saved evaluation manifest to {MANIFEST_PATH}")
     print(f"saved confusion matrices to {CONFUSION_PLOT_PATH}")

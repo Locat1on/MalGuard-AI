@@ -101,7 +101,7 @@ MLP 训练保持特征文件为 memmap，增量拟合 `StandardScaler`，DataLoa
 .venv\Scripts\python.exe src/eval/compare_models.py
 ```
 
-评估脚本对官方有标签 test memmap 分批推理，使用与后端一致的 FP32 MLP 路径，同时评估 LightGBM、MLP 和实际部署的概率平均集成。输出为 `checkpoints/metrics.json`、`evaluation_manifest.json` 和 `confusion_matrices.png`；评估不会覆盖模型权重。
+评估脚本对官方有标签 test memmap 分批推理，使用与后端一致的 FP32 MLP 路径，同时评估 LightGBM、MLP 和实际部署的概率平均集成。输出为 `checkpoints/metrics.json`、`evaluation_manifest.json` 和 `confusion_matrices.png`；三项产物先暂存，最后发布来源清单作为一次完整评估的完成标记，后端指标接口直接读取该清单。评估不会覆盖模型权重。
 
 ## 从虚拟机访问
 

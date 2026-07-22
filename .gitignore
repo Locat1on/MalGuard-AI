@@ -19,6 +19,11 @@ checkpoints/.mlp.training.pt.tmp
 checkpoints/.scaler.training.pkl
 checkpoints/.scaler.training.pkl.tmp
 checkpoints/lightgbm.txt.tmp
+checkpoints/.metrics.evaluation.json
+checkpoints/.metrics.evaluation.json.tmp
+checkpoints/.evaluation_manifest.evaluation.json
+checkpoints/.evaluation_manifest.evaluation.json.tmp
+checkpoints/.confusion_matrices.evaluation.png
 
 # Ablation run logs (the trained models + metrics json are committed; logs are not)
 checkpoints/ablation/*.log

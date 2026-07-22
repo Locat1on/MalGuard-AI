@@ -651,45 +651,50 @@ class PredictorReliabilityTests(unittest.TestCase):
         client = TestClient(app)
         metrics_module = sys.modules["app.routers.metrics"]
         with tempfile.TemporaryDirectory() as directory:
-            metrics_path = Path(directory) / "metrics.json"
-            with patch.object(metrics_module, "METRICS_FILE", metrics_path):
+            manifest_path = Path(directory) / "evaluation_manifest.json"
+            with patch.object(metrics_module, "MANIFEST_FILE", manifest_path):
                 missing = client.get("/api/metrics")
                 self.assertEqual(missing.status_code, 404)
                 self.assertIn("尚未生成", missing.json()["detail"])
 
-                metrics_path.write_text("{broken-json", encoding="utf-8")
+                manifest_path.write_text("{broken-json", encoding="utf-8")
                 invalid = client.get("/api/metrics")
                 self.assertEqual(invalid.status_code, 503)
-                self.assertIn("文件不可用", invalid.json()["detail"])
+                self.assertIn("来源清单不可用", invalid.json()["detail"])
 
-                metrics_path.write_text(
+                manifest_path.write_text(
                     json.dumps(
-                        [
-                            {
-                                "model": "invalid",
-                                "accuracy": 1.01,
-                                "precision": 0.8,
-                                "recall": 0.7,
-                                "f1": 0.75,
-                            }
-                        ]
+                        {
+                            "results": [
+                                {
+                                    "model": "invalid",
+                                    "accuracy": 1.01,
+                                    "precision": 0.8,
+                                    "recall": 0.7,
+                                    "f1": 0.75,
+                                }
+                            ]
+                        }
                     ),
                     encoding="utf-8",
                 )
                 out_of_range = client.get("/api/metrics")
                 self.assertEqual(out_of_range.status_code, 503)
 
-                metrics_path.write_text(
+                manifest_path.write_text(
                     json.dumps(
-                        [
-                            {
-                                "model": "verified",
-                                "accuracy": 0.9,
-                                "precision": 0.8,
-                                "recall": 0.7,
-                                "f1": 0.75,
-                            }
-                        ]
+                        {
+                            "results": [
+                                {
+                                    "model": "verified",
+                                    "accuracy": 0.9,
+                                    "precision": 0.8,
+                                    "recall": 0.7,
+                                    "f1": 0.75,
+                                    "confusion_matrix": [[1, 0], [0, 1]],
+                                }
+                            ]
+                        }
                     ),
                     encoding="utf-8",
                 )
