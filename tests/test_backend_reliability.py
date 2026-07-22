@@ -12,6 +12,8 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
+from fastapi import FastAPI, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "webapp" / "backend"
@@ -19,6 +21,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app import history
+from app.auth import ApiKeyAuthMiddleware, document_api_key
 from app.main import app
 from app.predictor import (
     FeatureExtractionError,
@@ -30,6 +33,7 @@ from app.schemas import AttckTag, DetectionResult
 from app.settings import (
     DEFAULT_CORS_ORIGINS,
     Settings,
+    parse_api_key,
     parse_cors_origins,
     parse_inference_concurrency,
 )
@@ -59,6 +63,7 @@ class RuntimeSettingsTests(unittest.TestCase):
         settings = Settings.from_environ({})
         self.assertEqual(settings.cors_origins, DEFAULT_CORS_ORIGINS)
         self.assertEqual(settings.inference_concurrency, 1)
+        self.assertIsNone(settings.api_key)
         self.assertEqual(
             parse_cors_origins(
                 "http://192.168.56.1:5173/, https://demo.example, "
@@ -76,6 +81,14 @@ class RuntimeSettingsTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     parse_inference_concurrency(value)
+        for value in ("short", "密钥" * 8):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    parse_api_key(value)
+        self.assertEqual(parse_api_key("a" * 16), "a" * 16)
+        secure_settings = Settings.from_environ({"MALGUARD_API_KEY": "a" * 16})
+        self.assertEqual(secure_settings.api_key, "a" * 16)
+        self.assertNotIn("a" * 16, repr(secure_settings))
 
     def test_declared_oversized_uploads_are_rejected_before_route_parsing(self) -> None:
         client = TestClient(app)
@@ -91,6 +104,90 @@ class RuntimeSettingsTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 413)
                 self.assertIn("请求体过大", response.json()["detail"])
+
+    def test_api_key_protects_routes_and_keeps_preflight_public(self) -> None:
+        protected_app = FastAPI()
+        protected_app.add_middleware(
+            ApiKeyAuthMiddleware,
+            api_key="a" * 16,
+            protected_prefixes=("/api/detect", "/api/history"),
+        )
+        protected_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["http://frontend.example"],
+            allow_methods=["GET", "OPTIONS"],
+            allow_headers=["*"],
+            expose_headers=["X-Request-ID"],
+        )
+
+        @protected_app.get("/api/health")
+        async def public_health() -> dict:
+            return {"ok": True}
+
+        @protected_app.get("/api/history")
+        async def protected_history() -> list:
+            return []
+
+        @protected_app.post("/api/detect")
+        async def protected_detect(file: UploadFile) -> dict:
+            return {"filename": file.filename}
+
+        document_api_key(
+            protected_app,
+            ("/api/detect", "/api/history"),
+        )
+        client = TestClient(protected_app)
+        openapi = client.get("/openapi.json").json()
+        self.assertEqual(
+            openapi["components"]["securitySchemes"]["ApiKeyAuth"]["name"],
+            "X-API-Key",
+        )
+        self.assertEqual(
+            openapi["paths"]["/api/history"]["get"]["security"],
+            [{"ApiKeyAuth": []}],
+        )
+        self.assertNotIn("security", openapi["paths"]["/api/health"]["get"])
+        self.assertEqual(client.get("/api/health").status_code, 200)
+        rejected_before_parse = client.post(
+            "/api/detect",
+            content=b"not-a-valid-multipart-body",
+            headers={"Content-Type": "multipart/form-data; boundary=broken"},
+        )
+        self.assertEqual(rejected_before_parse.status_code, 401)
+
+        missing = client.get(
+            "/api/history",
+            headers={"Origin": "http://frontend.example"},
+        )
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(missing.headers["www-authenticate"], "ApiKey")
+        self.assertEqual(
+            missing.headers["access-control-allow-origin"],
+            "http://frontend.example",
+        )
+        self.assertIn("X-Request-ID", missing.headers["access-control-expose-headers"])
+        self.assertEqual(
+            client.get("/api/history", headers={"X-API-Key": "wrong"}).status_code,
+            401,
+        )
+        self.assertEqual(
+            client.get(
+                "/api/history",
+                headers={"X-API-Key": "a" * 16},
+            ).status_code,
+            200,
+        )
+
+        preflight = client.options(
+            "/api/history",
+            headers={
+                "Origin": "http://frontend.example",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "X-API-Key",
+            },
+        )
+        self.assertEqual(preflight.status_code, 200)
+        self.assertIn("X-API-Key", preflight.headers["access-control-allow-headers"])
 
     def test_cors_preflight_accepts_only_configured_origin(self) -> None:
         client = TestClient(app)
@@ -388,6 +485,7 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(body["ready"], body["modelsLoaded"])
         self.assertIn("modelProvenanceVerified", body)
         self.assertIn("modelProvenanceWarning", body)
+        self.assertIn("apiKeyRequired", body)
         self.assertEqual(
             body["inferenceConcurrency"],
             sys.modules["app.main"].predictor.inference_concurrency,

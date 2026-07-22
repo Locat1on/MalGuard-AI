@@ -2,7 +2,7 @@
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 DEFAULT_CORS_ORIGINS = (
@@ -54,10 +54,22 @@ def parse_inference_concurrency(value: str | None) -> int:
     return concurrency
 
 
+def parse_api_key(value: str | None) -> str | None:
+    """Return an optional secret, rejecting keys too short for network use."""
+    if value is None or value == "":
+        return None
+    if len(value) < 16:
+        raise ValueError("MALGUARD_API_KEY 启用时至少需要 16 个字符。")
+    if not value.isascii():
+        raise ValueError("MALGUARD_API_KEY 只能使用 ASCII 字符。")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     cors_origins: tuple[str, ...]
     inference_concurrency: int
+    api_key: str | None = field(repr=False)
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -67,6 +79,7 @@ class Settings:
             inference_concurrency=parse_inference_concurrency(
                 source.get("MALGUARD_INFERENCE_CONCURRENCY")
             ),
+            api_key=parse_api_key(source.get("MALGUARD_API_KEY")),
         )
 
 

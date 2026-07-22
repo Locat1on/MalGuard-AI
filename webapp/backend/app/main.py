@@ -8,6 +8,11 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import history
+from app.auth import (
+    ApiKeyAuthMiddleware,
+    PROTECTED_API_PREFIXES,
+    document_api_key,
+)
 from app.predictor import predictor
 from app.schemas import HealthStatus
 from app.settings import settings
@@ -26,15 +31,23 @@ app.add_middleware(
     path_limits=DETECT_REQUEST_LIMITS,
 )
 app.add_middleware(
+    ApiKeyAuthMiddleware,
+    api_key=settings.api_key,
+    protected_prefixes=PROTECTED_API_PREFIXES,
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Process-Time-Ms"],
 )
 
 app.include_router(detect.router, prefix="/api")
 app.include_router(metrics.router, prefix="/api")
 app.include_router(history_router.router, prefix="/api")
+if settings.api_key is not None:
+    document_api_key(app, PROTECTED_API_PREFIXES)
 
 
 @app.middleware("http")
@@ -82,6 +95,7 @@ def _health_status() -> HealthStatus:
         modelProvenanceVerified=predictor.model_provenance_verified,
         modelProvenanceWarning=predictor.model_provenance_warning,
         inferenceConcurrency=predictor.inference_concurrency,
+        apiKeyRequired=settings.api_key is not None,
     )
 
 

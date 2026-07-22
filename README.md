@@ -37,6 +37,7 @@ cd webapp/backend
 
 - `MALGUARD_CORS_ORIGINS`：允许直接调用 API 的前端来源，使用逗号分隔；默认允许 `http://localhost:5173` 和 `http://127.0.0.1:5173`，不接受 `*`。
 - `MALGUARD_INFERENCE_CONCURRENCY`：共享模型可同时执行的推理数，范围 1～8，默认 1。单 GPU 演示建议保留 1；只有经过显存和吞吐压测后再提高。
+- `MALGUARD_API_KEY`：可选的 ASCII 密钥，至少 16 字符。配置后，`/api/detect*` 和 `/api/history*` 必须携带 `X-API-Key`；health、ready 和 metrics 保持公开。未配置时维持本地免鉴权模式。
 
 ### 2. 前端
 
@@ -111,6 +112,18 @@ $env:MALGUARD_CORS_ORIGINS = "http://<访问前端所用IP或域名>:5173"
 ```
 
 还需确保宿主机防火墙仅对可信网络开放所需端口。不要为了省略配置把 CORS 设置成通配符。公网或共享网络部署还应由反向代理限制请求体：后端会提前拒绝带有超大 `Content-Length` 的常规上传，但 chunked transfer 的磁盘级保护必须由入口代理完成。
+
+共享网络部署建议在启动后端前设置随机 API Key：
+
+```powershell
+$bytes = New-Object byte[] 32
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$rng.GetBytes($bytes)
+$rng.Dispose()
+$env:MALGUARD_API_KEY = [BitConverter]::ToString($bytes).Replace("-", "")
+```
+
+客户端通过 `X-API-Key` 请求头发送密钥。API Key 不能替代 HTTPS；跨越不可信网络时必须由反向代理提供 TLS，不能把密钥放入 URL 查询参数或前端构建产物。
 
 ## 项目结构
 

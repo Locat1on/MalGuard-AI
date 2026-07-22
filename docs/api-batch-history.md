@@ -140,6 +140,7 @@ interface HealthStatus {
   modelProvenanceVerified: boolean | null; // 当前三项核心 artifact 是否匹配正式评估哈希
   modelProvenanceWarning: string | null;   // 清单缺失、损坏或模型漂移时的说明
   inferenceConcurrency: number;             // 共享模型允许的并发推理数，默认 1
+  apiKeyRequired: boolean;                   // 是否要求受保护接口携带 X-API-Key
 }
 ```
 
@@ -168,6 +169,7 @@ interface HistoryStats {
 ```
 
 这些数据来自 SQLite 聚合，可用于历史页顶部的紧凑统计区。`llmDisagreements / llmCompared` 才是有意义的 LLM 分歧率，批量检测未运行 LLM，不应进入分母。
+
 ## 8. 指标来源与请求追踪（新增）
 
 `GET /api/metrics` 现返回三行正式评估结果：LightGBM、MLP、实际部署使用的二者算术平均集成。
@@ -188,3 +190,16 @@ X-Process-Time-Ms: 后端处理耗时（毫秒）
 ```
 
 错误提示可附带 `X-Request-ID` 方便定位日志，但不应向用户展示后端堆栈或上传内容。
+
+## 9. API Key 访问保护
+
+未设置 `MALGUARD_API_KEY` 时，接口行为与本地开发模式一致。设置至少 16 字符的 ASCII 密钥后：
+
+- `/api/detect`、`/api/detect/batch` 和全部 `/api/history*` 接口要求请求头 `X-API-Key: <密钥>`；
+- `/api/health`、`/api/ready`、`/api/metrics` 和 `/api/metrics/provenance` 仍可匿名访问；
+- 缺失或错误密钥返回 401、`WWW-Authenticate: ApiKey` 和 JSON `detail`；
+- CORS `OPTIONS` 预检不要求密钥，`X-API-Key` 可作为跨域请求头；
+- 响应会向跨域前端暴露 `X-Request-ID` 与 `X-Process-Time-Ms`；
+- 启用密钥时 `/docs` 会显示 `ApiKeyAuth` 授权入口，并只把检测与历史操作标记为受保护。
+
+`GET /api/health` 的 `apiKeyRequired` 用于告诉前端是否需要凭据，不包含密钥本身。报告接口 `/api/history/{id}/report` 也受保护，因此启用鉴权后，前端必须用带请求头的 `fetch` 获取 HTML，再创建临时 Blob URL 打开；普通 `<a href>` 无法附加密钥。密钥不得写入查询参数、日志、错误消息或静态前端构建变量。
