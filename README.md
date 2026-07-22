@@ -69,7 +69,7 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 
 ### 4. 家族分类模型（可选）
 
-检测结果中的"家族分类"字段由一个独立的 MLP 多分类模型给出（与二分类 MLP 同一套 `src/models/mlp.py` 分支注意力融合架构，仅输出层宽度换成家族类别数），仅对判定为恶意的样本生效。该模型不是必需的：`checkpoints/` 下若没有 `family_mlp.pt` / `family_labels.json`，后端会自动跳过家族预测，`family` 字段返回 `null`，不影响检测本身。
+检测结果中的"家族分类"字段由一个独立的 MLP 多分类模型给出（与二分类 MLP 同一套 `src/models/mlp.py` 分支注意力融合架构，仅输出层宽度换成家族类别数），仅对判定为恶意的样本生效。该模型不是必需的：`checkpoints/` 下若缺少模型文件，或运行时前向出现异常、非有限值、错误形状及无效概率分布，后端会停用家族预测，`family` 与 `familyConfidence` 返回 `null`，但继续返回 LightGBM + MLP 核心检测结果；原因可从 `/api/health` 的 `familyModelLoadError` 查看。
 
 训练（需要先跑过 `train_mlp.py`——家族模型复用它产出的 `checkpoints/scaler.pkl`，不单独拟合；还需要先按上面步骤跑通特征提取，`data/raw/ember2024/family_train.json` 与 `family_test.json` 需已由 `src/data/extract_family_labels.py` 生成）：
 

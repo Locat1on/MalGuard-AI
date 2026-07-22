@@ -42,7 +42,7 @@
 
 - 应用启动时请求 `GET /api/health`。
 - `ready=false` 或检测返回 503 时，在上传区显示明确状态和 `modelLoadError`，并禁用上传按钮。
-- `familyModelLoaded=false`、`llmConfigured=false` 是可选能力降级，不应阻止核心检测；可用小型状态提示说明“家族分类未加载”或“LLM 说明不可用”。
+- `familyModelLoaded=false`、`llmConfigured=false` 是可选能力降级，不应阻止核心检测；家族状态结合 `familyModelLoadError` 显示“家族分类未加载”或“家族分类运行中已停用”，LLM 状态可显示“LLM 说明不可用”。不要因家族运行时降级清空已经返回的恶意/良性主结论。
 - 不要把 `/api/health` 的 `ok=true` 误解为模型已经就绪，应使用 `ready/modelsLoaded`。
 
 ## P1：把现有后端能力真正展示出来

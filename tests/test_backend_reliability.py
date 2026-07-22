@@ -367,6 +367,101 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(instance.family_labels, labels)
         self.assertEqual(instance.family_confidence_floor, 0.3)
 
+    def test_family_runtime_failure_degrades_without_blocking_detection(self) -> None:
+        class FakeLightGBM:
+            @staticmethod
+            def predict(features):
+                return np.full(len(features), 0.9)
+
+        class IdentityScaler:
+            @staticmethod
+            def transform(features):
+                return features
+
+        class FakeMLP:
+            @staticmethod
+            def __call__(tensor):
+                return torch.full((len(tensor), 1), 2.0)
+
+        class BrokenFamily:
+            @staticmethod
+            def __call__(tensor):
+                raise RuntimeError("broken family head")
+
+        class InvalidFamily:
+            @staticmethod
+            def __call__(tensor):
+                return torch.tensor([[float("nan"), 0.0]]).repeat(
+                    len(tensor), 1
+                )
+
+        class PartiallyInvalidFamily:
+            @staticmethod
+            def __call__(tensor):
+                return torch.tensor(
+                    [[2.0, 0.0], [float("nan"), 0.0]]
+                )
+
+        def build_instance(family_model) -> Predictor:
+            instance = Predictor.__new__(Predictor)
+            instance.models_loaded = True
+            instance.model_load_error = None
+            instance.device = torch.device("cpu")
+            instance.lgbm_model = FakeLightGBM()
+            instance.scaler = IdentityScaler()
+            instance.mlp_model = FakeMLP()
+            instance.family_model = family_model
+            instance.family_model_loaded = True
+            instance.family_model_load_error = None
+            instance.family_labels = ["Example", "其他"]
+            instance.family_confidence_floor = 0.3
+            instance._inference_slots = threading.BoundedSemaphore(1)
+            return instance
+
+        features = [np.array([0.1, 0.2], dtype=np.float32)]
+        for family_model in (BrokenFamily(), InvalidFamily()):
+            with self.subTest(family_model=type(family_model).__name__):
+                instance = build_instance(family_model)
+                result = instance.predict_features_ml_only(
+                    ["sample.exe"], features
+                )[0]
+                self.assertEqual(result.verdict, "malicious")
+                self.assertIsNone(result.family)
+                self.assertIsNone(result.familyConfidence)
+                self.assertFalse(instance.family_model_loaded)
+                self.assertIn("运行时推理失败", instance.family_model_load_error)
+
+        partial_instance = build_instance(PartiallyInvalidFamily())
+        partial_results = partial_instance.predict_features_ml_only(
+            ["first.exe", "second.exe"], features * 2
+        )
+        self.assertTrue(all(result.family is None for result in partial_results))
+        self.assertFalse(partial_instance.family_model_loaded)
+
+        single_instance = build_instance(BrokenFamily())
+        self.assertEqual(
+            single_instance._predict_family(np.array(features)),
+            (None, None),
+        )
+        self.assertFalse(single_instance.family_model_loaded)
+
+        decoder = build_instance(BrokenFamily())
+        with self.assertRaisesRegex(ModelUnavailableError, "概率总和"):
+            decoder._decode_family_probability(np.array([0.4, 0.4]))
+
+        runtime_predictor = sys.modules["app.main"].predictor
+        with (
+            patch.object(runtime_predictor, "family_model_loaded", False),
+            patch.object(
+                runtime_predictor,
+                "family_model_load_error",
+                "运行时推理失败（RuntimeError）。",
+            ),
+        ):
+            health = TestClient(app).get("/api/health").json()
+        self.assertFalse(health["familyModelLoaded"])
+        self.assertIn("运行时推理失败", health["familyModelLoadError"])
+
     def test_deployed_artifact_provenance_detects_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

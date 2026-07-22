@@ -179,6 +179,11 @@ class Predictor:
     def _decode_family_probability(
         self, probabilities: np.ndarray
     ) -> tuple[str | None, float | None]:
+        probabilities = _validate_probability_vector(
+            probabilities, len(self.family_labels), "家族模型"
+        )
+        if not np.isclose(probabilities.sum(), 1.0, rtol=1e-5, atol=1e-6):
+            raise ModelUnavailableError("家族模型推理输出的概率总和不为 1。")
         index = int(probabilities.argmax())
         confidence = float(probabilities[index])
         name = self.family_labels[index]
@@ -186,17 +191,50 @@ class Predictor:
             return None, None
         return name, round(confidence, 4)
 
+    def _disable_family_model(self, error: Exception) -> None:
+        self.family_model_loaded = False
+        self.family_model_load_error = (
+            f"运行时推理失败（{type(error).__name__}: {error}）。"
+        )
+
+    def _predict_family_tensor(
+        self, tensor: torch.Tensor
+    ) -> tuple[list[str | None], list[float | None]]:
+        """Run the optional family head without allowing it to block core detection."""
+        count = int(tensor.shape[0])
+        names: list[str | None] = [None] * count
+        confidences: list[float | None] = [None] * count
+        if not self.family_model_loaded or count == 0:
+            return names, confidences
+
+        try:
+            with torch.inference_mode():
+                logits = self.family_model(tensor)
+                probabilities = torch.softmax(logits, dim=1).float().cpu().numpy()
+            expected_shape = (count, len(self.family_labels))
+            if probabilities.shape != expected_shape:
+                raise ModelUnavailableError(
+                    f"家族模型推理输出形状无效：期望 {expected_shape}，"
+                    f"实际 {probabilities.shape}。"
+                )
+            for index, row in enumerate(probabilities):
+                names[index], confidences[index] = (
+                    self._decode_family_probability(row)
+                )
+        except Exception as error:
+            self._disable_family_model(error)
+            return [None] * count, [None] * count
+        return names, confidences
+
     def _predict_family(
         self, features_scaled: np.ndarray
     ) -> tuple[str | None, float | None]:
         """Return a family suspicion only when the model is sufficiently confident."""
-        with torch.inference_mode():
-            tensor = torch.from_numpy(
-                features_scaled.astype(np.float32, copy=False)
-            ).to(self.device)
-            logits = self.family_model(tensor)
-            probabilities = torch.softmax(logits, dim=1).cpu().numpy()[0]
-        return self._decode_family_probability(probabilities)
+        tensor = torch.from_numpy(
+            features_scaled.astype(np.float32, copy=False)
+        ).to(self.device)
+        names, confidences = self._predict_family_tensor(tensor)
+        return names[0], confidences[0]
 
     def _try_load_models(self) -> bool:
         try:
@@ -295,16 +333,16 @@ class Predictor:
                 malicious_indices = np.flatnonzero(malicious_mask)
                 if self.family_model_loaded and len(malicious_indices):
                     index_tensor = torch.from_numpy(malicious_indices).to(self.device)
-                    family_logits = self.family_model(tensor.index_select(0, index_tensor))
-                    family_probabilities = (
-                        torch.softmax(family_logits, dim=1).float().cpu().numpy()
-                    )
-                    for row_index, probabilities in zip(
-                        malicious_indices, family_probabilities
-                    ):
-                        family_names[row_index], family_confidences[row_index] = (
-                            self._decode_family_probability(probabilities)
+                    selected_names, selected_confidences = (
+                        self._predict_family_tensor(
+                            tensor.index_select(0, index_tensor)
                         )
+                    )
+                    for output_index, row_index in enumerate(malicious_indices):
+                        family_names[row_index] = selected_names[output_index]
+                        family_confidences[row_index] = selected_confidences[
+                            output_index
+                        ]
 
         results = []
         for index, filename in enumerate(filenames):

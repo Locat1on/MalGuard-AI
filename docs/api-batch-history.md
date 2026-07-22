@@ -149,6 +149,8 @@ interface HealthStatus {
 
 `GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失、架构不兼容，或 LightGBM/MLP 返回非有限值、越界概率及错误形状时，检测接口也返回 503，不再默认返回伪造结果或形成不可信结论。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
 
+家族分类是可选组件：加载后若前向抛出异常，或返回非有限值、错误形状及概率和不为 1 的分布，后端会自动将 `familyModelLoaded` 置为 `false`，在 `familyModelLoadError` 中记录原因，并让本次及后续结果的 `family` / `familyConfidence` 返回 `null`；核心二分类结果与 `/api/ready` 不受影响。
+
 `modelProvenanceVerified=false` 不会阻断检测，但表示当前加载的 `lightgbm.txt`、`mlp.pt` 或 `scaler.pkl` 与 `evaluation_manifest.json` 不一致，此时指标页不能把现有正式分数视为当前部署模型的成绩；应重新运行 `src/eval/compare_models.py`。值为 `null` 表示缺少或无法读取来源清单。
 
 `inferenceConcurrency` 只描述共享模型前向并发上限；单 GPU 默认值 1 用于降低显存争用风险。`detectionConcurrency` 则覆盖 multipart 解析、特征提取、模型推理、单文件 LLM 和历史写入的完整请求生命周期，默认每进程 2 个。
