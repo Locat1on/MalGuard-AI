@@ -27,8 +27,31 @@ FEATURE_DIM = _extractor.dim
 SEGMENT_DIMS: list[tuple[str, int]] = [(fe.name, fe.dim) for fe in _extractor.features]
 
 
+DOS_HEADER_SIZE = 64
+PE_POINTER_OFFSET = 0x3C
+PE_SIGNATURE = b"PE\x00\x00"
+COFF_HEADER_SIZE = 20
+
+
+def validate_pe_structure(file_bytes: bytes) -> None:
+    """Reject arbitrary bytes before the permissive EMBER extractor can vectorize them."""
+    if len(file_bytes) < DOS_HEADER_SIZE or file_bytes[:2] != b"MZ":
+        raise ValueError("缺少有效的 DOS MZ 文件头")
+    pe_offset = int.from_bytes(
+        file_bytes[PE_POINTER_OFFSET : PE_POINTER_OFFSET + 4],
+        byteorder="little",
+        signed=False,
+    )
+    minimum_nt_header_end = pe_offset + len(PE_SIGNATURE) + COFF_HEADER_SIZE
+    if pe_offset < DOS_HEADER_SIZE or minimum_nt_header_end > len(file_bytes):
+        raise ValueError("PE 头偏移超出文件边界")
+    if file_bytes[pe_offset : pe_offset + len(PE_SIGNATURE)] != PE_SIGNATURE:
+        raise ValueError("缺少有效的 PE NT 签名")
+
+
 def extract_features(file_bytes: bytes) -> np.ndarray:
-    """Return the EMBER2024 feature vector (shape (FEATURE_DIM,), dtype float32) for a PE file's raw bytes."""
+    """Return the EMBER2024 feature vector for structurally valid PE bytes."""
+    validate_pe_structure(file_bytes)
     return _extractor.feature_vector(file_bytes)
 
 

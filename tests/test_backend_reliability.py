@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+import torch
+
 from fastapi.testclient import TestClient
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "webapp" / "backend"
@@ -14,7 +17,12 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app import history
 from app.main import app
-from app.predictor import ModelUnavailableError, Predictor, verify_evaluated_artifacts
+from app.predictor import (
+    FeatureExtractionError,
+    ModelUnavailableError,
+    Predictor,
+    verify_evaluated_artifacts,
+)
 from app.schemas import AttckTag, DetectionResult
 
 
@@ -81,6 +89,132 @@ class PredictorReliabilityTests(unittest.TestCase):
         instance.model_load_error = "checkpoint mismatch"
         with self.assertRaisesRegex(ModelUnavailableError, "checkpoint mismatch"):
             instance.predict("sample.exe", b"MZ")
+
+    def test_vectorized_predictor_calls_each_model_once(self) -> None:
+        class FakeLightGBM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def predict(self, features):
+                self.calls += 1
+                self.last_shape = features.shape
+                return features[:, 1]
+
+        class IdentityScaler:
+            @staticmethod
+            def transform(features):
+                return features
+
+        class FakeMLP:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def __call__(self, tensor):
+                self.calls += 1
+                self.last_shape = tuple(tensor.shape)
+                return tensor[:, 0]
+
+        instance = Predictor.__new__(Predictor)
+        instance.models_loaded = True
+        instance.model_load_error = None
+        instance.device = torch.device("cpu")
+        instance.family_model_loaded = False
+        instance.lgbm_model = FakeLightGBM()
+        instance.scaler = IdentityScaler()
+        instance.mlp_model = FakeMLP()
+
+        results = instance.predict_features_ml_only(
+            ["first.exe", "second.exe"],
+            [
+                np.array([0.9, 0.8], dtype=np.float32),
+                np.array([-2.0, 0.2], dtype=np.float32),
+            ],
+        )
+        self.assertEqual(instance.lgbm_model.calls, 1)
+        self.assertEqual(instance.mlp_model.calls, 1)
+        self.assertEqual(instance.lgbm_model.last_shape, (2, 2))
+        self.assertEqual(instance.mlp_model.last_shape, (2, 2))
+        self.assertEqual([result.verdict for result in results], ["malicious", "benign"])
+        self.assertEqual([result.filename for result in results], ["first.exe", "second.exe"])
+
+    def test_batch_route_vectorizes_valid_files_and_preserves_order(self) -> None:
+        client = TestClient(app)
+        predictor = sys.modules["app.routers.detect"].predictor
+
+        def extract(content: bytes) -> np.ndarray:
+            if content == b"bad":
+                raise FeatureExtractionError("invalid PE")
+            return np.array([len(content), 1], dtype=np.float32)
+
+        def predict_batch(filenames, feature_rows):
+            self.assertEqual(filenames, ["first.exe", "second.exe"])
+            self.assertEqual(len(feature_rows), 2)
+            return [
+                _result("first.exe", "malicious"),
+                _result("second.exe", "benign"),
+            ]
+
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(predictor, "extract_feature_vector", side_effect=extract),
+            patch.object(
+                predictor,
+                "predict_features_ml_only",
+                side_effect=predict_batch,
+            ) as batch_predict,
+            patch.object(history, "record_many", return_value=[101, 102]),
+        ):
+            response = client.post(
+                "/api/detect/batch",
+                files=[
+                    ("files", ("first.exe", b"good-one", "application/octet-stream")),
+                    ("files", ("broken.exe", b"bad", "application/octet-stream")),
+                    ("files", ("second.exe", b"good-two", "application/octet-stream")),
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(batch_predict.call_count, 1)
+        body = response.json()
+        self.assertEqual(body["total"], 3)
+        self.assertEqual(body["failed"], 1)
+        self.assertEqual(
+            [item["filename"] for item in body["items"]],
+            ["first.exe", "broken.exe", "second.exe"],
+        )
+        self.assertEqual(
+            [item["historyId"] for item in body["items"]],
+            [101, None, 102],
+        )
+
+    def test_non_pe_upload_is_rejected_before_model_inference(self) -> None:
+        client = TestClient(app)
+        predictor = sys.modules["app.routers.detect"].predictor
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(predictor.lgbm_model, "predict") as model_predict,
+        ):
+            response = client.post(
+                "/api/detect",
+                files={
+                    "file": (
+                        "renamed.exe",
+                        b"This is plain text, not a PE file.",
+                        "application/octet-stream",
+                    )
+                },
+            )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("MZ", response.json()["detail"])
+        model_predict.assert_not_called()
+
+    def test_mz_header_with_out_of_bounds_pe_pointer_is_rejected(self) -> None:
+        malformed = bytearray(64)
+        malformed[:2] = b"MZ"
+        malformed[0x3C:0x40] = (4096).to_bytes(4, "little")
+        instance = Predictor.__new__(Predictor)
+        with self.assertRaisesRegex(FeatureExtractionError, "超出文件边界"):
+            instance.extract_feature_vector(bytes(malformed))
 
     def test_detect_returns_503_before_reading_when_model_unavailable(self) -> None:
         client = TestClient(app)

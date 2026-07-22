@@ -1,4 +1,6 @@
 import hashlib
+import logging
+import time
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
@@ -8,6 +10,7 @@ from app.predictor import FeatureExtractionError, ModelUnavailableError, predict
 from app.schemas import BatchDetectionResult, BatchItem, DetectionResult
 
 router = APIRouter()
+BATCH_LOGGER = logging.getLogger("malguard.batch")
 
 # predictor.predict() runs GPU inference plus a synchronous OpenRouter LLM call on every
 # request (see src/llm/report.py) — well over what's reasonable to block the single-threaded
@@ -31,6 +34,7 @@ def _require_detector() -> None:
             status_code=503,
             detail=predictor.model_load_error or "检测模型当前不可用。",
         )
+
 
 async def _read_capped(file: UploadFile) -> bytes:
     """Read an upload, rejecting anything over MAX_UPLOAD_BYTES before it is fully buffered."""
@@ -69,63 +73,140 @@ async def detect(file: UploadFile) -> DetectionResult:
 
 def _error_item(filename: str, error: str) -> BatchItem:
     return BatchItem(
-        filename=filename, ok=False, verdict=None, confidence=None, family=None,
-        familyConfidence=None, lgbmScore=None, mlpScore=None, modelAgreement=None,
-        historyId=None, error=error,
+        filename=filename,
+        ok=False,
+        verdict=None,
+        confidence=None,
+        family=None,
+        familyConfidence=None,
+        lgbmScore=None,
+        mlpScore=None,
+        modelAgreement=None,
+        historyId=None,
+        error=error,
+    )
+
+
+def _success_item(result: DetectionResult) -> BatchItem:
+    return BatchItem(
+        filename=result.filename,
+        ok=True,
+        verdict=result.verdict,
+        confidence=result.confidence,
+        family=result.family,
+        familyConfidence=result.familyConfidence,
+        lgbmScore=result.lgbmScore,
+        mlpScore=result.mlpScore,
+        modelAgreement=result.modelAgreement,
+        historyId=None,
+        error=None,
     )
 
 
 @router.post("/detect/batch", response_model=BatchDetectionResult)
 async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
-    """Scan multiple files with the two ML models only (no LLM/ATT&CK — see predict_ml_only).
-
-    Per-file failures (a non-PE file, or one that's over the size cap) are reported as `ok=False`
-    items rather than failing the whole request, so one bad file in a folder doesn't sink the
-    rest of the batch.
-    """
+    """Extract files independently, then run one vectorized ML inference batch."""
     _require_detector()
+    request_started = time.perf_counter()
+    extraction_seconds = 0.0
+    inference_seconds = 0.0
     if not files:
         raise HTTPException(status_code=400, detail="未收到任何文件。")
     if len(files) > MAX_BATCH_FILES:
-        raise HTTPException(status_code=413, detail=f"单次批量最多 {MAX_BATCH_FILES} 个文件，本次为 {len(files)} 个。")
+        raise HTTPException(
+            status_code=413,
+            detail=f"单次批量最多 {MAX_BATCH_FILES} 个文件，本次为 {len(files)} 个。",
+        )
 
-    items: list[BatchItem] = []
-    # (index into `items`, DetectionResult, sha256) for successful rows, so they can all be
-    # persisted in one transaction after the loop and have their history ids written back.
-    to_record: list[tuple[int, DetectionResult, str]] = []
-    for file in files:
+    items: list[BatchItem | None] = [None] * len(files)
+    valid_positions: list[int] = []
+    valid_filenames: list[str] = []
+    feature_rows: list = []
+    file_hashes: list[str] = []
+
+    for position, file in enumerate(files):
         filename = file.filename or "unknown"
         try:
             content = await _read_capped(file)
-        except FileTooLargeError as e:
-            items.append(_error_item(filename, str(e)))
-            continue
-        try:
-            result = await run_in_threadpool(predictor.predict_ml_only, filename, content)
-        except FeatureExtractionError as e:
-            items.append(_error_item(filename, str(e)))
+        except FileTooLargeError as error:
+            items[position] = _error_item(filename, str(error))
             continue
 
-        item = BatchItem(
-            filename=filename, ok=True, verdict=result.verdict, confidence=result.confidence,
-            family=result.family, familyConfidence=result.familyConfidence,
-            lgbmScore=result.lgbmScore, mlpScore=result.mlpScore,
-            modelAgreement=result.modelAgreement, historyId=None, error=None,
-        )
-        if predictor.models_loaded:
-            to_record.append((len(items), result, hashlib.sha256(content).hexdigest()))
-        items.append(item)
+        if not predictor.models_loaded:
+            result = await run_in_threadpool(
+                predictor.predict_ml_only, filename, content
+            )
+            items[position] = _success_item(result)
+            del content
+            continue
+
+        file_hash = hashlib.sha256(content).hexdigest()
+        extraction_started = time.perf_counter()
+        try:
+            features = await run_in_threadpool(
+                predictor.extract_feature_vector, content
+            )
+        except FeatureExtractionError as error:
+            items[position] = _error_item(filename, str(error))
+            extraction_seconds += time.perf_counter() - extraction_started
+            del content
+            continue
+        extraction_seconds += time.perf_counter() - extraction_started
+        del content
+
+        valid_positions.append(position)
+        valid_filenames.append(filename)
+        feature_rows.append(features)
+        file_hashes.append(file_hash)
+
+    to_record: list[tuple[int, DetectionResult, str]] = []
+    if feature_rows:
+        inference_started = time.perf_counter()
+        try:
+            results = await run_in_threadpool(
+                predictor.predict_features_ml_only,
+                valid_filenames,
+                feature_rows,
+            )
+            inference_seconds = time.perf_counter() - inference_started
+        except ModelUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        for position, result, file_hash in zip(
+            valid_positions, results, file_hashes
+        ):
+            items[position] = _success_item(result)
+            to_record.append((position, result, file_hash))
 
     if to_record:
-        ids = await run_in_threadpool(
-            history.record_many, [(r, sha) for _, r, sha in to_record], "batch"
+        history_ids = await run_in_threadpool(
+            history.record_many,
+            [(result, file_hash) for _, result, file_hash in to_record],
+            "batch",
         )
-        for (idx, _, _), history_id in zip(to_record, ids):
-            items[idx].historyId = history_id
+        for (position, _, _), history_id in zip(to_record, history_ids):
+            item = items[position]
+            if item is not None:
+                item.historyId = history_id
 
-    malicious = sum(1 for i in items if i.verdict == "malicious")
-    benign = sum(1 for i in items if i.verdict == "benign")
-    failed = sum(1 for i in items if not i.ok)
+    if any(item is None for item in items):
+        raise RuntimeError("batch result alignment invariant failed")
+    final_items = [item for item in items if item is not None]
+    malicious = sum(1 for item in final_items if item.verdict == "malicious")
+    benign = sum(1 for item in final_items if item.verdict == "benign")
+    failed = sum(1 for item in final_items if not item.ok)
+    BATCH_LOGGER.info(
+        "files=%d valid=%d failed=%d extraction_ms=%.1f inference_ms=%.1f total_ms=%.1f",
+        len(final_items),
+        len(final_items) - failed,
+        failed,
+        extraction_seconds * 1000,
+        inference_seconds * 1000,
+        (time.perf_counter() - request_started) * 1000,
+    )
     return BatchDetectionResult(
-        items=items, total=len(items), malicious=malicious, benign=benign, failed=failed
+        items=final_items,
+        total=len(final_items),
+        malicious=malicious,
+        benign=benign,
+        failed=failed,
     )

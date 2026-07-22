@@ -141,29 +141,27 @@ class Predictor:
         self.family_model.eval()
         return True
 
-    def _predict_family(self, features_scaled: np.ndarray) -> tuple[str | None, float | None]:
-        """Return (family_name, confidence) or (None, None).
+    def _decode_family_probability(
+        self, probabilities: np.ndarray
+    ) -> tuple[str | None, float | None]:
+        index = int(probabilities.argmax())
+        confidence = float(probabilities[index])
+        name = self.family_labels[index]
+        if name == self.family_labels[-1] or confidence < self.family_confidence_floor:
+            return None, None
+        return name, round(confidence, 4)
 
-        The classifier always argmaxes to *some* class, but for a file that doesn't resemble any
-        family it saw in training (e.g. the synthetic demo sample, which is out-of-distribution)
-        that pick is not trustworthy. So we return None when either (a) the pick is the "其他"
-        catch-all, or (b) its softmax probability is below family_confidence_floor. When a name is
-        returned its confidence goes with it, so the UI can show "suspected X (62%)" rather than a
-        bald claim.
-        """
+    def _predict_family(
+        self, features_scaled: np.ndarray
+    ) -> tuple[str | None, float | None]:
+        """Return a family suspicion only when the model is sufficiently confident."""
         with torch.inference_mode():
             tensor = torch.from_numpy(
                 features_scaled.astype(np.float32, copy=False)
             ).to(self.device)
             logits = self.family_model(tensor)
-            proba = torch.softmax(logits, dim=1).cpu().numpy()[0]
-        idx = int(proba.argmax())
-        confidence = float(proba[idx])
-        name = self.family_labels[idx]
-        # "其他" is always the last label — treat catch-all or low-confidence as unknown.
-        if name == self.family_labels[-1] or confidence < self.family_confidence_floor:
-            return None, None
-        return name, round(confidence, 4)
+            probabilities = torch.softmax(logits, dim=1).cpu().numpy()[0]
+        return self._decode_family_probability(probabilities)
 
     def _try_load_models(self) -> bool:
         try:
@@ -215,57 +213,108 @@ class Predictor:
             return self._stub_predict(filename, content)
         raise ModelUnavailableError(self.model_load_error or "检测模型 checkpoint 不完整。")
 
-    def predict_ml_only(self, filename: str, content: bytes) -> DetectionResult:
-        """Batch path: the two ML models (+ optional family) only, no LLM/ATT&CK.
+    def extract_feature_vector(self, content: bytes) -> np.ndarray:
+        """Extract one EMBER vector and normalize third-party parser failures."""
+        try:
+            return extract_features(content).reshape(-1)
+        except Exception as error:
+            raise FeatureExtractionError(
+                f"无法解析该文件的 PE 结构（{type(error).__name__}: {error}），可能不是有效的 PE 文件，"
+                "或存在第三方解析库尚未处理的特殊结构（例如某些证书链格式）。"
+            ) from error
 
-        Batch scanning is the "hot path" the design intent keeps off the LLM (latency + API
-        cost) — see CLAUDE.local.md. `llmReport`/`llmVerdict`/`llmConfidence` come back empty
-        and `attck` empty, so the response schema stays the same as single-file detection while
-        skipping the expensive analysis layer.
-        """
+    def predict_features_ml_only(
+        self,
+        filenames: list[str],
+        feature_rows: list[np.ndarray] | np.ndarray,
+    ) -> list[DetectionResult]:
+        """Vectorized LightGBM, MLP and optional family inference for a valid feature batch."""
+        if not self.models_loaded:
+            raise ModelUnavailableError(
+                self.model_load_error or "检测模型 checkpoint 不完整。"
+            )
+        if not filenames:
+            return []
+        features = np.asarray(feature_rows, dtype=np.float32)
+        if features.ndim != 2 or len(features) != len(filenames):
+            raise ValueError("filenames and feature_rows must form an aligned 2D batch")
+
+        lgbm_scores = np.asarray(self.lgbm_model.predict(features), dtype=np.float64)
+        features_scaled = self.scaler.transform(features).astype(np.float32, copy=False)
+        with torch.inference_mode():
+            tensor = torch.from_numpy(features_scaled).to(self.device)
+            mlp_logits = self.mlp_model(tensor)
+            mlp_scores = torch.sigmoid(mlp_logits).float().cpu().numpy().reshape(-1)
+
+            ensemble_scores = (lgbm_scores + mlp_scores) / 2
+            malicious_mask = ensemble_scores >= 0.5
+            family_names: list[str | None] = [None] * len(filenames)
+            family_confidences: list[float | None] = [None] * len(filenames)
+            malicious_indices = np.flatnonzero(malicious_mask)
+            if self.family_model_loaded and len(malicious_indices):
+                index_tensor = torch.from_numpy(malicious_indices).to(self.device)
+                family_logits = self.family_model(tensor.index_select(0, index_tensor))
+                family_probabilities = (
+                    torch.softmax(family_logits, dim=1).float().cpu().numpy()
+                )
+                for row_index, probabilities in zip(
+                    malicious_indices, family_probabilities
+                ):
+                    family_names[row_index], family_confidences[row_index] = (
+                        self._decode_family_probability(probabilities)
+                    )
+
+        results = []
+        for index, filename in enumerate(filenames):
+            p_lgbm = float(lgbm_scores[index])
+            p_mlp = float(mlp_scores[index])
+            is_malicious = bool(malicious_mask[index])
+            final_probability = float(ensemble_scores[index])
+            confidence = final_probability if is_malicious else 1 - final_probability
+            agreement = (
+                "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
+            )
+            results.append(
+                DetectionResult(
+                    filename=filename,
+                    verdict="malicious" if is_malicious else "benign",
+                    confidence=round(confidence, 4),
+                    family=family_names[index],
+                    familyConfidence=family_confidences[index],
+                    gradcamUrl=None,
+                    attck=[],
+                    llmReport="",
+                    modelAgreement=agreement,
+                    lgbmScore=round(p_lgbm, 4),
+                    mlpScore=round(p_mlp, 4),
+                    llmVerdict=None,
+                    llmConfidence=None,
+                )
+            )
+        return results
+
+    def predict_ml_only(self, filename: str, content: bytes) -> DetectionResult:
+        """Single-item compatibility wrapper around vectorized ML-only inference."""
         if not self.models_loaded:
             if self.stub_enabled:
                 return self._stub_predict(filename, content)
-            raise ModelUnavailableError(self.model_load_error or "检测模型 checkpoint 不完整。")
-
-        # batch skips the attention detail
-        p_lgbm, p_mlp, is_malicious, family, family_confidence, _ = self._score(content)
-        final_prob = (p_lgbm + p_mlp) / 2
-        confidence = final_prob if is_malicious else 1 - final_prob
-        agreement = "agree" if (p_lgbm >= 0.5) == (p_mlp >= 0.5) else "disagree"
-        return DetectionResult(
-            filename=filename,
-            verdict="malicious" if is_malicious else "benign",
-            confidence=round(confidence, 4),
-            family=family,
-            familyConfidence=family_confidence,
-            gradcamUrl=None,
-            attck=[],
-            llmReport="",
-            modelAgreement=agreement,
-            lgbmScore=round(p_lgbm, 4),
-            mlpScore=round(p_mlp, 4),
-            llmVerdict=None,
-            llmConfidence=None,
-        )
+            raise ModelUnavailableError(
+                self.model_load_error or "检测模型 checkpoint 不完整。"
+            )
+        features = self.extract_feature_vector(content)
+        return self.predict_features_ml_only([filename], [features])[0]
 
     def _score(
         self, content: bytes
     ) -> tuple[float, float, bool, str | None, float | None, list[FeatureAttention]]:
         """Feature extraction + both ML models + optional family + MLP fusion weights. No LLM.
 
-        Shared by single-file (`_real_predict`) and batch (`predict_ml_only`) so the two paths
-        can never diverge on how the verdict itself is computed. Returns
-        (p_lgbm, p_mlp, is_malicious, family, family_confidence, feature_attention). The attention
-        list is cheap (already computed inside the same forward pass); the batch path ignores it.
+        The interactive single-file path returns fusion weights for display. Batch detection uses
+        ``predict_features_ml_only`` to vectorize scoring and intentionally skips this detail.
+        Returns (p_lgbm, p_mlp, is_malicious, family, family_confidence, feature_attention).
         """
-        try:
-            features = extract_features(content).reshape(1, -1)
-        except Exception as e:
-            raise FeatureExtractionError(
-                f"无法解析该文件的 PE 结构（{type(e).__name__}: {e}），可能不是有效的 PE 文件，"
-                "或存在第三方解析库尚未处理的特殊结构（例如某些证书链格式）。"
-            ) from e
+        features = self.extract_feature_vector(content).reshape(1, -1)
+
 
         p_lgbm = float(self.lgbm_model.predict(features)[0])
 
@@ -279,7 +328,11 @@ class Predictor:
             attn_weights = attn[0].cpu().numpy()
 
         attention = [
-            FeatureAttention(group=name, label=FEATURE_GROUP_LABELS[name], weight=round(float(w), 4))
+            FeatureAttention(
+                group=name,
+                label=FEATURE_GROUP_LABELS[name],
+                weight=round(float(w), 4),
+            )
             for (name, _), w in zip(SEGMENT_DIMS, attn_weights)
         ]
 
