@@ -30,7 +30,7 @@ from src.config import load_config
 from src.llm.feature_summary import StructuralSummary
 
 CACHE_DIR = Path(__file__).resolve().parents[2] / "checkpoints" / "llm_cache"
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 
 SYSTEM_PROMPT = (
     "你是一个恶意软件静态分析助手。用户会给你一份由确定性代码提取的 PE 文件结构化事实，"
@@ -63,17 +63,42 @@ _ANALYSIS_FLIGHTS_GUARD = threading.Lock()
 _ANALYSIS_FLIGHTS: dict[str, _AnalysisFlight] = {}
 
 
+def _analysis_identity(config: dict | None = None) -> str:
+    """Fingerprint every setting that can change the generated analysis."""
+    current = load_config("llm") if config is None else config
+    payload = {
+        "analysis_version": ANALYSIS_VERSION,
+        "system_prompt": SYSTEM_PROMPT,
+        "provider_base_url": current["provider_base_url"],
+        "model": current["model"],
+        "temperature": current["temperature"],
+        "max_tokens": current["max_tokens"],
+    }
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 def _cache_path(file_hash: str) -> Path:
     return CACHE_DIR / f"{file_hash}.json"
 
 
-def _load_cached(file_hash: str) -> LLMAnalysis | None:
+def _load_cached(
+    file_hash: str, analysis_identity: str | None = None
+) -> LLMAnalysis | None:
     path = _cache_path(file_hash)
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("analysis_version") != ANALYSIS_VERSION:
+            return None
+        expected_identity = analysis_identity or _analysis_identity()
+        if data.get("analysis_identity") != expected_identity:
             return None
         verdict = data["verdict"]
         confidence = float(data["confidence"])
@@ -88,7 +113,11 @@ def _load_cached(file_hash: str) -> LLMAnalysis | None:
     return LLMAnalysis(verdict=verdict, confidence=confidence, narrative=narrative)
 
 
-def _save_cache(file_hash: str, analysis: LLMAnalysis) -> None:
+def _save_cache(
+    file_hash: str,
+    analysis: LLMAnalysis,
+    analysis_identity: str | None = None,
+) -> None:
     # Only cache successful analyses — a transient network failure should not be pinned.
     if analysis.verdict is None:
         return
@@ -100,6 +129,7 @@ def _save_cache(file_hash: str, analysis: LLMAnalysis) -> None:
     payload = json.dumps(
         {
             "analysis_version": ANALYSIS_VERSION,
+            "analysis_identity": analysis_identity or _analysis_identity(),
             "verdict": analysis.verdict,
             "confidence": analysis.confidence,
             "narrative": analysis.narrative,
@@ -128,7 +158,12 @@ def _parse_response(raw: str) -> LLMAnalysis:
     )
 
 
-def _request_analysis(file_hash: str, summary: StructuralSummary) -> LLMAnalysis:
+def _request_analysis(
+    file_hash: str,
+    summary: StructuralSummary,
+    config: dict,
+    analysis_identity: str,
+) -> LLMAnalysis:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         return LLMAnalysis(
@@ -137,7 +172,6 @@ def _request_analysis(file_hash: str, summary: StructuralSummary) -> LLMAnalysis
             narrative="[LLM 分析不可用] 未设置 OPENROUTER_API_KEY 环境变量。",
         )
 
-    config = load_config("llm")
     try:
         response = requests.post(
             config["provider_base_url"],
@@ -172,21 +206,31 @@ def _request_analysis(file_hash: str, summary: StructuralSummary) -> LLMAnalysis
             narrative=f"[LLM 分析失败] {error}",
         )
 
-    _save_cache(file_hash, analysis)
+    _save_cache(file_hash, analysis, analysis_identity)
     return analysis
 
 
 def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysis:
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    cached = _load_cached(file_hash)
+    try:
+        config = load_config("llm")
+        analysis_identity = _analysis_identity(config)
+    except Exception as error:
+        return LLMAnalysis(
+            verdict=None,
+            confidence=None,
+            narrative=f"[LLM 配置不可用] {type(error).__name__}: {error}",
+        )
+    flight_key = f"{file_hash}:{analysis_identity}"
+    cached = _load_cached(file_hash, analysis_identity)
     if cached is not None:
         return cached
 
     with _ANALYSIS_FLIGHTS_GUARD:
-        flight = _ANALYSIS_FLIGHTS.get(file_hash)
+        flight = _ANALYSIS_FLIGHTS.get(flight_key)
         if flight is None:
             flight = _AnalysisFlight()
-            _ANALYSIS_FLIGHTS[file_hash] = flight
+            _ANALYSIS_FLIGHTS[flight_key] = flight
             is_leader = True
         else:
             is_leader = False
@@ -202,7 +246,9 @@ def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysi
     try:
         # Another process may have populated the shared cache before this in-process
         # flight was registered, so the leader performs one final cache check.
-        flight.result = _load_cached(file_hash) or _request_analysis(file_hash, summary)
+        flight.result = _load_cached(file_hash, analysis_identity) or _request_analysis(
+            file_hash, summary, config, analysis_identity
+        )
         return flight.result
     except BaseException as error:
         flight.error = error
@@ -210,5 +256,5 @@ def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysi
     finally:
         flight.done.set()
         with _ANALYSIS_FLIGHTS_GUARD:
-            if _ANALYSIS_FLIGHTS.get(file_hash) is flight:
-                del _ANALYSIS_FLIGHTS[file_hash]
+            if _ANALYSIS_FLIGHTS.get(flight_key) is flight:
+                del _ANALYSIS_FLIGHTS[flight_key]

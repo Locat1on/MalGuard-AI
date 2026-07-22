@@ -16,6 +16,7 @@ from src.llm.feature_summary import (
 from src.llm.report import (
     ANALYSIS_VERSION,
     LLMAnalysis,
+    _analysis_identity,
     _load_cached,
     _save_cache,
     generate_report,
@@ -62,13 +63,28 @@ class FeatureSummaryTests(unittest.TestCase):
 
 
 class ReportCacheTests(unittest.TestCase):
-    def test_cache_requires_current_analysis_version(self) -> None:
+    def test_analysis_identity_tracks_model_config_and_prompt(self) -> None:
+        config = {
+            "provider_base_url": "https://provider.example/v1/chat/completions",
+            "model": "model-a",
+            "temperature": 0.0,
+            "max_tokens": 100,
+        }
+        identity = _analysis_identity(config)
+        self.assertEqual(identity, _analysis_identity(dict(reversed(config.items()))))
+        self.assertNotEqual(identity, _analysis_identity({**config, "model": "model-b"}))
+        with patch("src.llm.report.SYSTEM_PROMPT", "changed prompt"):
+            self.assertNotEqual(identity, _analysis_identity(config))
+
+    def test_cache_requires_current_analysis_identity_and_version(self) -> None:
         analysis = LLMAnalysis("malicious", 0.8, "test")
+        identity = "a" * 64
         with tempfile.TemporaryDirectory() as directory:
             cache_dir = Path(directory)
             with patch("src.llm.report.CACHE_DIR", cache_dir):
-                _save_cache("new", analysis)
-                self.assertEqual(_load_cached("new"), analysis)
+                _save_cache("new", analysis, identity)
+                self.assertEqual(_load_cached("new", identity), analysis)
+                self.assertIsNone(_load_cached("new", "b" * 64))
 
                 (cache_dir / "old.json").write_text(
                     json.dumps(
@@ -77,11 +93,20 @@ class ReportCacheTests(unittest.TestCase):
                             "confidence": 0.8,
                             "narrative": "old",
                             "analysis_version": ANALYSIS_VERSION - 1,
+                            "analysis_identity": identity,
                         }
                     ),
                     encoding="utf-8",
                 )
-                self.assertIsNone(_load_cached("old"))
+                self.assertIsNone(_load_cached("old", identity))
+
+    def test_invalid_llm_config_does_not_break_detection(self) -> None:
+        summary = Mock()
+        with patch("src.llm.report.load_config", side_effect=KeyError("model")):
+            result = generate_report(b"sample", summary)
+        self.assertIsNone(result.verdict)
+        self.assertIsNone(result.confidence)
+        self.assertIn("LLM 配置不可用", result.narrative)
 
     def test_concurrent_same_file_uses_one_provider_request(self) -> None:
         response = Mock()
@@ -139,7 +164,7 @@ class ReportCacheTests(unittest.TestCase):
             cache_dir = Path(directory)
             (cache_dir / "broken.json").write_text("{not-json", encoding="utf-8")
             with patch("src.llm.report.CACHE_DIR", cache_dir):
-                self.assertIsNone(_load_cached("broken"))
+                self.assertIsNone(_load_cached("broken", "identity"))
 
 if __name__ == "__main__":
     unittest.main()
