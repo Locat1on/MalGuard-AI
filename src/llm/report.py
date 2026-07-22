@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -50,6 +50,17 @@ class LLMAnalysis:
     verdict: str | None  # "malicious" | "benign" | None (analysis unavailable/failed)
     confidence: float | None  # 0-1, None if verdict is None
     narrative: str
+
+
+@dataclass
+class _AnalysisFlight:
+    done: threading.Event = field(default_factory=threading.Event)
+    result: LLMAnalysis | None = None
+    error: BaseException | None = None
+
+
+_ANALYSIS_FLIGHTS_GUARD = threading.Lock()
+_ANALYSIS_FLIGHTS: dict[str, _AnalysisFlight] = {}
 
 
 def _cache_path(file_hash: str) -> Path:
@@ -117,18 +128,16 @@ def _parse_response(raw: str) -> LLMAnalysis:
     )
 
 
-def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysis:
-    file_hash = hashlib.sha256(file_bytes).hexdigest()
-    cached = _load_cached(file_hash)
-    if cached is not None:
-        return cached
-
+def _request_analysis(file_hash: str, summary: StructuralSummary) -> LLMAnalysis:
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        return LLMAnalysis(verdict=None, confidence=None, narrative="[LLM 分析不可用] 未设置 OPENROUTER_API_KEY 环境变量。")
+        return LLMAnalysis(
+            verdict=None,
+            confidence=None,
+            narrative="[LLM 分析不可用] 未设置 OPENROUTER_API_KEY 环境变量。",
+        )
 
     config = load_config("llm")
-
     try:
         response = requests.post(
             config["provider_base_url"],
@@ -147,13 +156,59 @@ def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysi
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         if content is None:
-            # Reasoning models (e.g. glm-5.2) can burn the whole max_tokens budget on the
-            # "reasoning" field and return content=None — raise max_tokens in configs/llm.yaml
-            # if this recurs (see CLAUDE.local.md).
+            # Some reasoning models can consume the whole token budget before content.
             raise ValueError("模型返回了空 content（可能是 max_tokens 预算被 reasoning 字段耗尽）")
         analysis = _parse_response(content.strip())
-    except (requests.RequestException, KeyError, IndexError, ValueError, json.JSONDecodeError) as e:
-        return LLMAnalysis(verdict=None, confidence=None, narrative=f"[LLM 分析失败] {e}")
+    except (
+        requests.RequestException,
+        KeyError,
+        IndexError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        return LLMAnalysis(
+            verdict=None,
+            confidence=None,
+            narrative=f"[LLM 分析失败] {error}",
+        )
 
     _save_cache(file_hash, analysis)
     return analysis
+
+
+def generate_report(file_bytes: bytes, summary: StructuralSummary) -> LLMAnalysis:
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    cached = _load_cached(file_hash)
+    if cached is not None:
+        return cached
+
+    with _ANALYSIS_FLIGHTS_GUARD:
+        flight = _ANALYSIS_FLIGHTS.get(file_hash)
+        if flight is None:
+            flight = _AnalysisFlight()
+            _ANALYSIS_FLIGHTS[file_hash] = flight
+            is_leader = True
+        else:
+            is_leader = False
+
+    if not is_leader:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        if flight.result is None:
+            raise RuntimeError("LLM single-flight completed without a result")
+        return flight.result
+
+    try:
+        # Another process may have populated the shared cache before this in-process
+        # flight was registered, so the leader performs one final cache check.
+        flight.result = _load_cached(file_hash) or _request_analysis(file_hash, summary)
+        return flight.result
+    except BaseException as error:
+        flight.error = error
+        raise
+    finally:
+        flight.done.set()
+        with _ANALYSIS_FLIGHTS_GUARD:
+            if _ANALYSIS_FLIGHTS.get(file_hash) is flight:
+                del _ANALYSIS_FLIGHTS[file_hash]

@@ -1,8 +1,11 @@
 import json
+import os
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src.llm.feature_summary import (
     MAX_INDICATORS_PER_KIND,
@@ -10,7 +13,13 @@ from src.llm.feature_summary import (
     _extract_string_indicators,
     summarize,
 )
-from src.llm.report import ANALYSIS_VERSION, LLMAnalysis, _load_cached, _save_cache
+from src.llm.report import (
+    ANALYSIS_VERSION,
+    LLMAnalysis,
+    _load_cached,
+    _save_cache,
+    generate_report,
+)
 
 
 class FeatureSummaryTests(unittest.TestCase):
@@ -73,6 +82,57 @@ class ReportCacheTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 self.assertIsNone(_load_cached("old"))
+
+    def test_concurrent_same_file_uses_one_provider_request(self) -> None:
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"verdict":"malicious","confidence":80,'
+                            '"narrative":"发现受限静态风险线索。"}'
+                        )
+                    }
+                }
+            ]
+        }
+        post = Mock()
+
+        def delayed_post(*args, **kwargs):
+            time.sleep(0.05)
+            return response
+
+        post.side_effect = delayed_post
+        summary = Mock()
+        summary.to_prompt_text.return_value = "bounded facts"
+        config = {
+            "provider_base_url": "https://provider.example/v1/chat/completions",
+            "model": "test-model",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "timeout_seconds": 1,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("src.llm.report.CACHE_DIR", Path(directory)),
+                patch("src.llm.report.load_config", return_value=config),
+                patch("src.llm.report.requests.post", post),
+                patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            ):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(
+                        pool.map(
+                            lambda _: generate_report(b"same-file", summary),
+                            range(2),
+                        )
+                    )
+
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0].verdict, "malicious")
 
     def test_corrupt_cache_is_treated_as_miss(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

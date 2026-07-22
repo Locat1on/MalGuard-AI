@@ -11,6 +11,7 @@ from app import history
 from app.predictor import predictor
 from app.schemas import HealthStatus
 from app.settings import settings
+from app.upload_limits import ContentLengthLimitMiddleware, DETECT_REQUEST_LIMITS
 from app.routers import detect, metrics
 from app.routers import history as history_router
 
@@ -20,6 +21,10 @@ REQUEST_LOGGER = logging.getLogger("malguard.requests")
 
 app = FastAPI(title="MalGuard AI backend")
 
+app.add_middleware(
+    ContentLengthLimitMiddleware,
+    path_limits=DETECT_REQUEST_LIMITS,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),

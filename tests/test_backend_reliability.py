@@ -33,6 +33,7 @@ from app.settings import (
     parse_cors_origins,
     parse_inference_concurrency,
 )
+from app.upload_limits import MAX_BATCH_REQUEST_BYTES, MAX_SINGLE_REQUEST_BYTES
 
 
 def _result(filename: str = "sample.exe", verdict: str = "malicious") -> DetectionResult:
@@ -75,6 +76,21 @@ class RuntimeSettingsTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     parse_inference_concurrency(value)
+
+    def test_declared_oversized_uploads_are_rejected_before_route_parsing(self) -> None:
+        client = TestClient(app)
+        for path, limit in (
+            ("/api/detect", MAX_SINGLE_REQUEST_BYTES),
+            ("/api/detect/batch", MAX_BATCH_REQUEST_BYTES),
+        ):
+            with self.subTest(path=path):
+                response = client.post(
+                    path,
+                    content=b"",
+                    headers={"Content-Length": str(limit + 1)},
+                )
+                self.assertEqual(response.status_code, 413)
+                self.assertIn("请求体过大", response.json()["detail"])
 
     def test_cors_preflight_accepts_only_configured_origin(self) -> None:
         client = TestClient(app)
@@ -245,6 +261,27 @@ class PredictorReliabilityTests(unittest.TestCase):
 
         self.assertEqual(instance.mlp_model.max_active, 1)
         self.assertEqual(len(results), 2)
+
+    def test_batch_payload_total_is_rejected_before_feature_extraction(self) -> None:
+        client = TestClient(app)
+        detect_module = sys.modules["app.routers.detect"]
+        predictor = detect_module.predictor
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(detect_module, "MAX_BATCH_PAYLOAD_BYTES", 5),
+            patch.object(predictor, "extract_feature_vector") as extract,
+        ):
+            response = client.post(
+                "/api/detect/batch",
+                files=[
+                    ("files", ("first.exe", b"123", "application/octet-stream")),
+                    ("files", ("second.exe", b"456", "application/octet-stream")),
+                ],
+            )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertIn("批量文件总计", response.json()["detail"])
+        extract.assert_not_called()
 
     def test_batch_route_vectorizes_valid_files_and_preserves_order(self) -> None:
         client = TestClient(app)

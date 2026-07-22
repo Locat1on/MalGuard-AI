@@ -62,7 +62,7 @@ $env:OPENROUTER_API_KEY = "sk-or-v1-..."
 export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
-未配置 API Key 时，核心检测不受影响，后端会明确返回 LLM 分析不可用，不会伪造 LLM 结论。
+未配置 API Key 时，核心检测不受影响，后端会明确返回 LLM 分析不可用，不会伪造 LLM 结论。同一进程内并发分析相同文件时只发起一次 OpenRouter 请求，其余请求等待并复用同一结果；成功结果按文件 SHA-256 缓存。
 
 ### 4. 家族分类模型（可选）
 
@@ -110,7 +110,7 @@ MLP 训练保持特征文件为 memmap，增量拟合 `StandardScaler`，并在 
 $env:MALGUARD_CORS_ORIGINS = "http://<访问前端所用IP或域名>:5173"
 ```
 
-还需确保宿主机防火墙仅对可信网络开放所需端口。不要为了省略配置把 CORS 设置成通配符。
+还需确保宿主机防火墙仅对可信网络开放所需端口。不要为了省略配置把 CORS 设置成通配符。公网或共享网络部署还应由反向代理限制请求体：后端会提前拒绝带有超大 `Content-Length` 的常规上传，但 chunked transfer 的磁盘级保护必须由入口代理完成。
 
 ## 项目结构
 

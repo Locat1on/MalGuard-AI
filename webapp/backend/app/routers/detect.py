@@ -8,6 +8,7 @@ from starlette.concurrency import run_in_threadpool
 from app import history
 from app.predictor import FeatureExtractionError, ModelUnavailableError, predictor
 from app.schemas import BatchDetectionResult, BatchItem, DetectionResult
+from app.upload_limits import MAX_BATCH_FILES, MAX_BATCH_PAYLOAD_BYTES, MAX_UPLOAD_BYTES
 
 router = APIRouter()
 BATCH_LOGGER = logging.getLogger("malguard.batch")
@@ -16,12 +17,6 @@ BATCH_LOGGER = logging.getLogger("malguard.batch")
 # request (see src/llm/report.py) — well over what's reasonable to block the single-threaded
 # asyncio event loop on, which would otherwise stall every other in-flight request (including
 # unrelated /api/health or /api/metrics calls) for the duration of one detection.
-MAX_UPLOAD_BYTES = 100 * 1024 * 1024
-
-# Cap on how many files a single batch request may carry, so one request can't tie up the
-# worker threadpool indefinitely.
-MAX_BATCH_FILES = 100
-
 
 class FileTooLargeError(Exception):
     """An upload exceeded MAX_UPLOAD_BYTES. Single-file detect turns this into a 413; batch
@@ -117,12 +112,22 @@ async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
             status_code=413,
             detail=f"单次批量最多 {MAX_BATCH_FILES} 个文件，本次为 {len(files)} 个。",
         )
+    known_payload_bytes = sum(file.size or 0 for file in files)
+    if known_payload_bytes > MAX_BATCH_PAYLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"批量文件总计 {known_payload_bytes} 字节，超过 "
+                f"{MAX_BATCH_PAYLOAD_BYTES} 字节上限。"
+            ),
+        )
 
     items: list[BatchItem | None] = [None] * len(files)
     valid_positions: list[int] = []
     valid_filenames: list[str] = []
     feature_rows: list = []
     file_hashes: list[str] = []
+    total_upload_bytes = 0
 
     for position, file in enumerate(files):
         filename = file.filename or "unknown"
@@ -131,6 +136,15 @@ async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
         except FileTooLargeError as error:
             items[position] = _error_item(filename, str(error))
             continue
+
+        total_upload_bytes += len(content)
+        if total_upload_bytes > MAX_BATCH_PAYLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"批量文件总计超过 {MAX_BATCH_PAYLOAD_BYTES} 字节上限。"
+                ),
+            )
 
         if not predictor.models_loaded:
             result = await run_in_threadpool(
