@@ -599,6 +599,30 @@ class PredictorReliabilityTests(unittest.TestCase):
 
 
 class HistoryReliabilityTests(unittest.TestCase):
+    def test_report_distinguishes_batch_from_unavailable_single_llm(self) -> None:
+        unavailable = _result().model_copy(
+            update={
+                "llmReport": "[LLM 分析不可用] 未配置。",
+                "llmVerdict": None,
+                "llmConfidence": None,
+            }
+        )
+        batch = unavailable.model_copy(update={"filename": "batch.exe"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "history.db"
+            with patch("app.history.DB_PATH", db_path):
+                history.init_db()
+                single_id = history.record(unavailable, "single", "c" * 64)
+                batch_id = history.record(batch, "batch", "d" * 64)
+
+                single_report = history.render_report_html(history.get(single_id))
+                batch_report = history.render_report_html(history.get(batch_id))
+
+        self.assertIn("LLM 分析不可用或未形成有效结论", single_report)
+        self.assertNotIn("本次为批量检测", single_report)
+        self.assertIn("本次为批量检测，未运行 LLM 分析。", batch_report)
+
     def test_crud_stats_wal_and_html_escaping(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "history.db"

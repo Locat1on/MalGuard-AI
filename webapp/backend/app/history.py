@@ -231,7 +231,10 @@ def render_report_html(rec: dict) -> str:
         family_line = f"疑似 {rec['family']}{conf_suffix}"
 
     if rec["llmVerdict"] is None:
-        llm_line = "本次为批量检测，未运行 LLM 分析。"
+        if rec["source"] == "batch":
+            llm_line = "本次为批量检测，未运行 LLM 分析。"
+        else:
+            llm_line = "LLM 分析不可用或未形成有效结论（详见下方说明）。"
     else:
         llm_verdict_cn = "恶意" if rec["llmVerdict"] == "malicious" else "良性"
         conf = f"{rec['llmConfidence'] * 100:.0f}%" if rec["llmConfidence"] is not None else "—"
