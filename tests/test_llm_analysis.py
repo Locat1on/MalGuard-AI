@@ -18,6 +18,7 @@ from src.llm.report import (
     LLMAnalysis,
     _analysis_identity,
     _load_cached,
+    _parse_response,
     _save_cache,
     generate_report,
 )
@@ -63,6 +64,49 @@ class FeatureSummaryTests(unittest.TestCase):
 
 
 class ReportCacheTests(unittest.TestCase):
+    def test_response_parser_rejects_invalid_values(self) -> None:
+        valid = _parse_response(
+            '```json\n{"verdict":"malicious","confidence":80,'
+            '"narrative":"发现静态风险线索。"}\n```'
+        )
+        self.assertEqual(valid.confidence, 0.8)
+        self.assertEqual(valid.narrative, "发现静态风险线索。")
+
+        invalid_payloads = (
+            '{"verdict":"malicious","confidence":NaN,"narrative":"x"}',
+            '{"verdict":"benign","confidence":-1,"narrative":"x"}',
+            '{"verdict":"benign","confidence":101,"narrative":"x"}',
+            '{"verdict":"benign","confidence":true,"narrative":"x"}',
+            '{"verdict":"benign","confidence":80,"narrative":""}',
+            '{"verdict":"benign","confidence":80,"narrative":{"text":"x"}}',
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload), self.assertRaises(
+                (TypeError, ValueError)
+            ):
+                _parse_response(payload)
+
+    def test_cache_rejects_nonfinite_or_blank_analysis(self) -> None:
+        identity = "a" * 64
+        payload = {
+            "verdict": "malicious",
+            "confidence": float("nan"),
+            "narrative": "test",
+            "analysis_version": ANALYSIS_VERSION,
+            "analysis_identity": identity,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            cache_path = cache_dir / "invalid.json"
+            with patch("src.llm.report.CACHE_DIR", cache_dir):
+                cache_path.write_text(json.dumps(payload), encoding="utf-8")
+                self.assertIsNone(_load_cached("invalid", identity))
+
+                payload["confidence"] = 0.8
+                payload["narrative"] = "   "
+                cache_path.write_text(json.dumps(payload), encoding="utf-8")
+                self.assertIsNone(_load_cached("invalid", identity))
+
     def test_analysis_identity_tracks_model_config_and_prompt(self) -> None:
         config = {
             "provider_base_url": "https://provider.example/v1/chat/completions",
@@ -107,6 +151,47 @@ class ReportCacheTests(unittest.TestCase):
         self.assertIsNone(result.verdict)
         self.assertIsNone(result.confidence)
         self.assertIn("LLM 配置不可用", result.narrative)
+
+    def test_invalid_provider_payload_degrades_without_cache(self) -> None:
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"verdict":"malicious","confidence":180,'
+                            '"narrative":"invalid"}'
+                        )
+                    }
+                }
+            ]
+        }
+        summary = Mock()
+        summary.to_prompt_text.return_value = "bounded facts"
+        config = {
+            "provider_base_url": "https://provider.example/v1/chat/completions",
+            "model": "test-model",
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "timeout_seconds": 1,
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            with (
+                patch("src.llm.report.CACHE_DIR", cache_dir),
+                patch("src.llm.report.load_config", return_value=config),
+                patch("src.llm.report.requests.post", return_value=response),
+                patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}),
+            ):
+                result = generate_report(b"invalid-provider", summary)
+                cached_files = list(cache_dir.glob("*.json"))
+
+        self.assertIsNone(result.verdict)
+        self.assertIsNone(result.confidence)
+        self.assertIn("LLM 分析失败", result.narrative)
+        self.assertEqual(cached_files, [])
 
     def test_concurrent_same_file_uses_one_provider_request(self) -> None:
         response = Mock()

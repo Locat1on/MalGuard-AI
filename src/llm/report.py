@@ -13,6 +13,7 @@ Design constraints (see CLAUDE.local.md "Design intent"):
 """
 
 import json
+import math
 import os
 import re
 import sys
@@ -87,6 +88,30 @@ def _cache_path(file_hash: str) -> Path:
     return CACHE_DIR / f"{file_hash}.json"
 
 
+def _validated_analysis(
+    verdict: object,
+    confidence: object,
+    narrative: object,
+    *,
+    confidence_scale: float,
+) -> LLMAnalysis:
+    """Validate provider/cache data before it can become a displayed LLM result."""
+    if verdict not in ("malicious", "benign"):
+        raise ValueError(f"unexpected verdict value: {verdict!r}")
+    if isinstance(confidence, bool):
+        raise ValueError("confidence must be numeric, not boolean")
+    confidence_value = float(confidence) / confidence_scale
+    if not math.isfinite(confidence_value) or not 0 <= confidence_value <= 1:
+        raise ValueError(f"confidence is outside the valid range: {confidence!r}")
+    if not isinstance(narrative, str) or not narrative.strip():
+        raise ValueError("narrative must be a non-empty string")
+    return LLMAnalysis(
+        verdict=verdict,
+        confidence=confidence_value,
+        narrative=narrative.strip(),
+    )
+
+
 def _load_cached(
     file_hash: str, analysis_identity: str | None = None
 ) -> LLMAnalysis | None:
@@ -100,17 +125,15 @@ def _load_cached(
         expected_identity = analysis_identity or _analysis_identity()
         if data.get("analysis_identity") != expected_identity:
             return None
-        verdict = data["verdict"]
-        confidence = float(data["confidence"])
-        narrative = data["narrative"]
-        if verdict not in ("malicious", "benign") or not 0 <= confidence <= 1:
-            return None
-        if not isinstance(narrative, str):
-            return None
+        return _validated_analysis(
+            data["verdict"],
+            data["confidence"],
+            data["narrative"],
+            confidence_scale=1,
+        )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         # A truncated/stale cache must behave like a miss, never break detection.
         return None
-    return LLMAnalysis(verdict=verdict, confidence=confidence, narrative=narrative)
 
 
 def _save_cache(
@@ -148,13 +171,11 @@ def _parse_response(raw: str) -> LLMAnalysis:
     # instruction — strip that before parsing rather than failing the whole analysis.
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     payload = json.loads(match.group(0) if match else raw)
-    verdict = payload["verdict"]
-    if verdict not in ("malicious", "benign"):
-        raise ValueError(f"unexpected verdict value: {verdict!r}")
-    return LLMAnalysis(
-        verdict=verdict,
-        confidence=max(0.0, min(1.0, float(payload["confidence"]) / 100)),
-        narrative=str(payload["narrative"]).strip(),
+    return _validated_analysis(
+        payload["verdict"],
+        payload["confidence"],
+        payload["narrative"],
+        confidence_scale=100,
     )
 
 
