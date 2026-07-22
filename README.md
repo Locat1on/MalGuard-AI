@@ -65,7 +65,7 @@ $env:OPENROUTER_API_KEY = "sk-or-v1-..."
 export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
-未配置 API Key 时，核心检测不受影响，后端会明确返回 LLM 分析不可用，不会伪造 LLM 结论。同一进程内并发分析相同文件时只发起一次 OpenRouter 请求，其余请求等待并复用同一结果；成功结果按文件 SHA-256 缓存，并绑定当前 LLM 模型、生成参数和系统提示词；这些配置变化后会自动重新分析。
+未配置 API Key、静态摘要失败、LLM 调用异常或返回结构无效时，核心检测均不受影响，后端会令 `llmVerdict` / `llmConfidence` 为 `null` 并在 `llmReport` 中说明降级原因，不会伪造 LLM 结论。同一进程内并发分析相同文件时只发起一次 OpenRouter 请求，其余请求等待并复用同一结果；成功结果按文件 SHA-256 缓存，并绑定当前 LLM 模型、生成参数和系统提示词；这些配置变化后会自动重新分析。
 
 ### 4. 家族分类模型（可选）
 

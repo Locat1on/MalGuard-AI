@@ -54,7 +54,7 @@
 建议采用紧凑的三列对比：LightGBM 恶意概率、MLP 恶意概率、LLM 独立判定及置信度。明确标注：
 - 最终 verdict 只由 LightGBM + MLP 平均得到。
 - LLM 是基于有限静态线索的独立辅助意见，不参与最终概率。
-- `llmVerdict=null` 时显示“未配置或分析失败”，不要显示 0%。
+- `llmVerdict=null` 时根据 `llmReport` 显示“未配置”“摘要失败”或“LLM 分析失败”，不要显示 0%，也不要清空或遮挡已经返回的 LightGBM + MLP 主结论。摘要失败时 ATT&CK 可能为空；仅 LLM 失败时仍正常展示后端返回的确定性 ATT&CK 标签。
 
 ### 6. 特征组融合权重图
 

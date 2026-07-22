@@ -784,6 +784,72 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("LightGBM", response.json()["detail"])
 
+    def test_analysis_layer_failure_does_not_block_core_detection(self) -> None:
+        class Summary:
+            attck_tags = [
+                AttckTag(tactic="Defense Evasion", technique="T1027")
+            ]
+
+        class Analysis:
+            narrative = "正常分析"
+            verdict = "malicious"
+            confidence = 0.8
+
+        instance = Predictor.__new__(Predictor)
+        instance._score = lambda content: (
+            0.9,
+            0.8,
+            True,
+            None,
+            None,
+            [],
+        )
+
+        with (
+            patch(
+                "app.predictor.summarize",
+                side_effect=RuntimeError("summary failed"),
+            ),
+            patch("app.predictor.generate_report") as generate,
+        ):
+            summary_failure = instance._real_predict("sample.exe", b"MZ")
+        self.assertEqual(summary_failure.verdict, "malicious")
+        self.assertIsNone(summary_failure.llmVerdict)
+        self.assertIsNone(summary_failure.llmConfidence)
+        self.assertIn("摘要提取失败", summary_failure.llmReport)
+        self.assertEqual(summary_failure.attck, [])
+        generate.assert_not_called()
+
+        with (
+            patch("app.predictor.summarize", return_value=Summary()),
+            patch(
+                "app.predictor.generate_report",
+                side_effect=RuntimeError("provider wrapper failed"),
+            ),
+        ):
+            llm_failure = instance._real_predict("sample.exe", b"MZ")
+        self.assertEqual(llm_failure.verdict, "malicious")
+        self.assertIsNone(llm_failure.llmVerdict)
+        self.assertIn("LLM 分析失败", llm_failure.llmReport)
+        self.assertEqual(llm_failure.attck[0].technique, "T1027")
+
+        with (
+            patch("app.predictor.summarize", return_value=Summary()),
+            patch("app.predictor.generate_report", return_value=None),
+        ):
+            malformed = instance._real_predict("sample.exe", b"MZ")
+        self.assertIsNone(malformed.llmVerdict)
+        self.assertIn("LLM 分析失败", malformed.llmReport)
+
+        with (
+            patch("app.predictor.summarize", return_value=Summary()),
+            patch("app.predictor.generate_report", return_value=Analysis()),
+        ):
+            normal = instance._real_predict("sample.exe", b"MZ")
+        self.assertEqual(normal.llmReport, "正常分析")
+        self.assertEqual(normal.llmVerdict, "malicious")
+        self.assertEqual(normal.llmConfidence, 0.8)
+
     def test_health_and_ready_expose_real_state(self) -> None:
         client = TestClient(app)
         health_response = client.get("/api/health")

@@ -448,14 +448,45 @@ class Predictor:
         # final_prob/confidence above. This trades the earlier "not on the hot path" design
         # intent (see CLAUDE.local.md) for comparison completeness on every interactive
         # single-file upload; a true bulk/batch endpoint should still skip this.
-        summary = summarize(content)
-        analysis = generate_report(content, summary)
-        llm_report = analysis.narrative
-        llm_verdict = analysis.verdict
-        llm_confidence = analysis.confidence
+        summary = None
+        try:
+            summary = summarize(content)
+        except Exception as error:
+            llm_report = (
+                "[静态分析不可用] 摘要提取失败"
+                f"（{type(error).__name__}）。核心 ML 检测结果仍有效。"
+            )
+            llm_verdict = None
+            llm_confidence = None
+        else:
+            try:
+                analysis = generate_report(content, summary)
+                llm_report = analysis.narrative
+                llm_verdict = analysis.verdict
+                llm_confidence = analysis.confidence
+                if not isinstance(llm_report, str):
+                    raise ValueError("LLM narrative must be a string")
+                if llm_verdict not in ("malicious", "benign", None):
+                    raise ValueError("LLM verdict is invalid")
+                if llm_verdict is None:
+                    if llm_confidence is not None:
+                        raise ValueError("unavailable LLM verdict has confidence")
+                elif (
+                    llm_confidence is None
+                    or not np.isfinite(llm_confidence)
+                    or not 0 <= llm_confidence <= 1
+                ):
+                    raise ValueError("LLM confidence is invalid")
+            except Exception as error:
+                llm_report = (
+                    "[LLM 分析失败] 分析层异常"
+                    f"（{type(error).__name__}）。核心 ML 检测结果仍有效。"
+                )
+                llm_verdict = None
+                llm_confidence = None
         attck_tags = (
             [AttckTag(tactic=t.tactic, technique=t.technique) for t in summary.attck_tags]
-            if is_malicious
+            if is_malicious and summary is not None
             else []
         )
 
