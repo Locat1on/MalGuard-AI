@@ -633,6 +633,23 @@ class HistoryReliabilityTests(unittest.TestCase):
                     _result("benign.exe", "benign"), "batch", "b" * 64
                 )
 
+                client = TestClient(app)
+                first_page = client.get(
+                    "/api/history?limit=1&offset=0",
+                    headers={"Origin": DEFAULT_CORS_ORIGINS[0]},
+                )
+                self.assertEqual(first_page.status_code, 200)
+                self.assertEqual(first_page.headers["x-total-count"], "2")
+                self.assertEqual(len(first_page.json()), 1)
+                self.assertEqual(first_page.json()[0]["id"], second_id)
+                self.assertIn(
+                    "X-Total-Count",
+                    first_page.headers["access-control-expose-headers"],
+                )
+                empty_page = client.get("/api/history?limit=1&offset=2")
+                self.assertEqual(empty_page.json(), [])
+                self.assertEqual(empty_page.headers["x-total-count"], "2")
+
                 stats = history.stats()
                 self.assertEqual(stats["total"], 2)
                 self.assertEqual(stats["malicious"], 1)
@@ -643,7 +660,6 @@ class HistoryReliabilityTests(unittest.TestCase):
                 self.assertEqual(stats["llmCompared"], 2)
                 self.assertEqual(stats["llmDisagreements"], 1)
 
-                client = TestClient(app)
                 backup_response = client.get("/api/history/backup")
                 self.assertEqual(backup_response.status_code, 200)
                 self.assertIn(

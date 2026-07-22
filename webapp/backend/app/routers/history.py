@@ -2,7 +2,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -16,10 +16,15 @@ HISTORY_LOGGER = logging.getLogger("malguard.history")
 
 @router.get("/history", response_model=list[HistoryRecord])
 async def list_history(
+    response: Response,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
-    return await run_in_threadpool(history.list_recent, limit, offset)
+    records, total = await run_in_threadpool(
+        history.list_recent_page, limit, offset
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return records
 
 
 @router.get("/history/stats", response_model=HistoryStats)

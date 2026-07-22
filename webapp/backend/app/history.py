@@ -158,13 +158,15 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
-def list_recent(limit: int, offset: int) -> list[dict]:
+def list_recent_page(limit: int, offset: int) -> tuple[list[dict], int]:
+    """Return one page plus the unpaginated total for frontend navigation."""
     with closing(_connect()) as conn, conn:
+        total = int(conn.execute("SELECT COUNT(*) FROM detections").fetchone()[0])
         rows = conn.execute(
             "SELECT * FROM detections ORDER BY id DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [_row_to_dict(r) for r in rows], total
 
 
 def stats() -> dict:

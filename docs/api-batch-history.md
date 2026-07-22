@@ -87,7 +87,7 @@ const res = await fetch("/api/detect/batch", { method: "POST", body: form });
 
 历史默认存于后端 `data/history.db`，可通过 `MALGUARD_HISTORY_DB` 指向其他绝对路径或仓库根目录下的相对路径。重启、换浏览器后记录仍然存在。**注意：现有前端 `HistoryEntry.id` 是 `string`，后端返回的是 `number`——请把类型改成 `number`。** 后端历史记录字段比现有 `HistoryEntry` 多，前端按需取用即可。
 
-`GET /api/history?limit=50&offset=0` → `HistoryRecord[]`（按时间倒序，`limit` 1–500，默认 50）
+`GET /api/history?limit=50&offset=0` → `HistoryRecord[]`（按时间倒序，`limit` 1–500，默认 50）。响应头 `X-Total-Count` 返回不受分页参数影响的历史总数；即使当前页为空也会返回，可用于计算总页数。
 
 `GET /api/history/{id}` → 单条 `HistoryRecord`，不存在返回 404
 
@@ -214,7 +214,7 @@ X-Process-Time-Ms: 后端处理耗时（毫秒）
 - `/api/health`、`/api/ready`、`/api/metrics` 和 `/api/metrics/provenance` 仍可匿名访问；
 - 缺失或错误密钥返回 401、`WWW-Authenticate: ApiKey` 和 JSON `detail`；
 - CORS `OPTIONS` 预检不要求密钥，`X-API-Key` 可作为跨域请求头；
-- 响应会向跨域前端暴露 `X-Request-ID`、`X-Process-Time-Ms`、`Retry-After`、`Content-Disposition` 与 `WWW-Authenticate`；
+- 响应会向跨域前端暴露 `X-Request-ID`、`X-Process-Time-Ms`、`X-Total-Count`、`Retry-After`、`Content-Disposition` 与 `WWW-Authenticate`；
 - 启用密钥时 `/docs` 会显示 `ApiKeyAuth` 授权入口，并只把检测与历史操作标记为受保护。
 
 `GET /api/health` 的 `apiKeyRequired` 用于告诉前端是否需要凭据，不包含密钥本身。报告接口 `/api/history/{id}/report` 也受保护，因此启用鉴权后，前端必须用带请求头的 `fetch` 获取 HTML，再创建临时 Blob URL 打开；普通 `<a href>` 无法附加密钥。密钥不得写入查询参数、日志、错误消息或静态前端构建变量。

@@ -54,6 +54,7 @@ app.add_middleware(
         "WWW-Authenticate",
         "X-Process-Time-Ms",
         "X-Request-ID",
+        "X-Total-Count",
     ],
 )
 
