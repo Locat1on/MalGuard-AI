@@ -77,7 +77,7 @@
     }
   },
   "runtime": {
-    "generated_at_utc": "2026-07-22T13:08:06+00:00",
+    "generated_at_utc": "2026-07-22T13:18:48+00:00",
     "python": "3.11.4",
     "platform": "Windows-10-10.0.26100-SP0",
     "packages": {
@@ -92,7 +92,7 @@
     "cuda_device": "NVIDIA GeForce RTX 4070 Laptop GPU"
   },
   "git": {
-    "commit": "23365fe1913b56fdc2997a133f50002e11e8102e",
+    "commit": "d869551b51db651e1daf8c91807a3dcbd9e6e95c",
     "branch": "codex/backend-reliability-llm-analysis",
     "dirty": true
   }
