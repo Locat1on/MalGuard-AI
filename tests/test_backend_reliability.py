@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -12,7 +14,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app import history
 from app.main import app
-from app.predictor import ModelUnavailableError, Predictor
+from app.predictor import ModelUnavailableError, Predictor, verify_evaluated_artifacts
 from app.schemas import AttckTag, DetectionResult
 
 
@@ -42,6 +44,36 @@ class PredictorReliabilityTests(unittest.TestCase):
             self.assertFalse(instance._try_load_models())
         self.assertEqual(instance.model_load_error, "RuntimeError: bad checkpoint")
 
+    def test_deployed_artifact_provenance_detects_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "model.bin"
+            artifact.write_bytes(b"evaluated checkpoint")
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            manifest = root / "evaluation_manifest.json"
+            manifest.write_text(
+                json.dumps({"artifacts": {"model.bin": {"sha256": digest}}}),
+                encoding="utf-8",
+            )
+
+            verified, warning = verify_evaluated_artifacts(
+                manifest, {"model.bin": artifact}
+            )
+            self.assertTrue(verified)
+            self.assertIsNone(warning)
+
+            artifact.write_bytes(b"different checkpoint")
+            verified, warning = verify_evaluated_artifacts(
+                manifest, {"model.bin": artifact}
+            )
+            self.assertFalse(verified)
+            self.assertIn("不一致", warning)
+
+            verified, warning = verify_evaluated_artifacts(
+                root / "missing.json", {"model.bin": artifact}
+            )
+            self.assertIsNone(verified)
+            self.assertIn("无法核验", warning)
     def test_unavailable_model_does_not_return_stub_by_default(self) -> None:
         instance = Predictor.__new__(Predictor)
         instance.models_loaded = False
@@ -74,6 +106,8 @@ class PredictorReliabilityTests(unittest.TestCase):
         body = health_response.json()
         self.assertIn(body["mode"], ("real", "stub", "unavailable"))
         self.assertEqual(body["ready"], body["modelsLoaded"])
+        self.assertIn("modelProvenanceVerified", body)
+        self.assertIn("modelProvenanceWarning", body)
 
         ready_response = client.get("/api/ready")
         self.assertEqual(ready_response.status_code, 200 if body["ready"] else 503)

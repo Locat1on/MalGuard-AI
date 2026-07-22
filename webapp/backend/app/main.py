@@ -73,6 +73,8 @@ def _health_status() -> HealthStatus:
         llmConfigured=bool(os.environ.get("OPENROUTER_API_KEY")),
         modelLoadError=predictor.model_load_error,
         familyModelLoadError=predictor.family_model_load_error,
+        modelProvenanceVerified=predictor.model_provenance_verified,
+        modelProvenanceWarning=predictor.model_provenance_warning,
     )
 
 

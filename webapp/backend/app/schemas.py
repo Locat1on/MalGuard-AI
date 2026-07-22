@@ -101,6 +101,8 @@ class HealthStatus(BaseModel):
     llmConfigured: bool
     modelLoadError: str | None
     familyModelLoadError: str | None
+    modelProvenanceVerified: bool | None
+    modelProvenanceWarning: str | None
 
 
 class HistoryStats(BaseModel):

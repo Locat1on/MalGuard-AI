@@ -9,6 +9,12 @@ from sklearn.preprocessing import StandardScaler
 
 from src.data import load_features
 from src.eval.compare_models import compute_metrics
+from src.models.train_family import (
+    IndexedFamilyDataset,
+    collapse_confusion_classes,
+    make_indexed_loader,
+    select_family_indices,
+)
 from src.models.train_mlp import fit_scaler_incrementally
 from src.reproducibility import artifact_manifest, write_json_atomic
 
@@ -45,6 +51,54 @@ class MemorySafeTrainingTests(unittest.TestCase):
             self.assertEqual(sorted(np.bincount(y_train).tolist()), [3, 3])
             self.assertEqual(sorted(np.bincount(y_val).tolist()), [1, 1])
 
+    def test_family_loader_keeps_memmap_rows_and_labels_aligned(self) -> None:
+        features = np.arange(15, dtype=np.float32).reshape(5, 3)
+        targets = np.array([1, 0, 1, 1, 1], dtype=np.int32)
+        families = np.array(["alpha", None, None, "beta", "rare"], dtype=object)
+        candidates = np.arange(5)
+        indices, labels = select_family_indices(
+            targets,
+            families,
+            candidates,
+            {"alpha": 0, "beta": 1},
+            other_idx=2,
+        )
+        np.testing.assert_array_equal(indices, [0, 3, 4])
+        np.testing.assert_array_equal(labels, [0, 1, 2])
+
+        scaler = StandardScaler().fit(features)
+        dataset = IndexedFamilyDataset(features, indices, labels)
+        loader = make_indexed_loader(
+            dataset,
+            scaler,
+            batch_size=2,
+            shuffle=False,
+            seed=42,
+            pin_memory=False,
+        )
+        batches = list(loader)
+        actual_features = np.concatenate([batch[0].numpy() for batch in batches])
+        actual_labels = np.concatenate([batch[1].numpy() for batch in batches])
+        np.testing.assert_allclose(
+            actual_features,
+            scaler.transform(features[indices]).astype(np.float32),
+            rtol=1e-6,
+            atol=1e-6,
+        )
+        np.testing.assert_array_equal(actual_labels, labels)
+
+    def test_large_family_confusion_matrix_is_collapsed(self) -> None:
+        y_true = np.array([0, 0, 0, 1, 1, 2, 3])
+        y_pred = np.array([0, 1, 2, 1, 3, 2, 0])
+        collapsed_true, collapsed_pred, display_labels = collapse_confusion_classes(
+            y_true,
+            y_pred,
+            ["a", "b", "c", "d"],
+            max_classes=2,
+        )
+        np.testing.assert_array_equal(collapsed_true, [0, 0, 0, 1, 1, 2, 2])
+        np.testing.assert_array_equal(collapsed_pred, [0, 1, 2, 1, 2, 2, 0])
+        self.assertEqual(display_labels, ["a", "b", "其余已建模家族"])
     def test_metrics_use_probability_threshold(self) -> None:
         metrics = compute_metrics(
             np.array([0, 0, 1, 1]),

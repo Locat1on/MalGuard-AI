@@ -27,8 +27,10 @@ from src.features.extract import SEGMENT_DIMS, extract_features
 from src.llm.feature_summary import summarize
 from src.llm.report import generate_report
 from src.models.mlp import MalwareMLP
+from src.reproducibility import sha256_file
 
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
+EVALUATION_MANIFEST_PATH = CHECKPOINTS_DIR / "evaluation_manifest.json"
 
 # Human-readable Chinese labels for the 12 EMBER feature groups, so the fusion-weight
 # signal is display-ready without the frontend hardcoding this mapping.
@@ -47,6 +49,29 @@ FEATURE_GROUP_LABELS = {
     "pefilewarnings": "PE 解析告警",
 }
 
+
+def verify_evaluated_artifacts(
+    manifest_path: Path,
+    artifacts: dict[str, Path],
+) -> tuple[bool | None, str | None]:
+    """Check that deployed artifacts are exactly those used by the published evaluation."""
+    if not manifest_path.exists():
+        return None, "缺少 evaluation_manifest.json，无法核验当前模型与正式指标的一致性。"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected = manifest["artifacts"]
+        mismatches = []
+        for name, path in artifacts.items():
+            expected_hash = expected.get(name, {}).get("sha256")
+            if not expected_hash:
+                mismatches.append(f"{name} 缺少评估哈希")
+            elif sha256_file(path) != expected_hash:
+                mismatches.append(f"{name} 与评估版本不一致")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        return None, f"评估来源清单不可用（{type(error).__name__}: {error}）。"
+    if mismatches:
+        return False, "；".join(mismatches) + "。请重新运行正式评估。"
+    return True, None
 
 class ModelUnavailableError(Exception):
     """Raised when real detector checkpoints are unavailable or incompatible."""
@@ -69,7 +94,11 @@ class Predictor:
         self.stub_enabled = os.environ.get("ALLOW_STUB_PREDICTIONS") == "1"
         self.model_load_error: str | None = None
         self.family_model_load_error: str | None = None
+        self.model_provenance_verified: bool | None = None
+        self.model_provenance_warning: str | None = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            torch.set_float32_matmul_precision("high")
         self.models_loaded = self._try_load_models()
         self.family_model_loaded = self._try_load_family_model()
 
@@ -106,7 +135,9 @@ class Predictor:
             embed_dim=family_config["embed_dim"],
             num_classes=len(self.family_labels),
         ).to(self.device)
-        self.family_model.load_state_dict(torch.load(family_model_path, map_location=self.device))
+        self.family_model.load_state_dict(
+            torch.load(family_model_path, map_location=self.device, weights_only=True)
+        )
         self.family_model.eval()
         return True
 
@@ -120,8 +151,11 @@ class Predictor:
         returned its confidence goes with it, so the UI can show "suspected X (62%)" rather than a
         bald claim.
         """
-        with torch.no_grad():
-            logits = self.family_model(torch.tensor(features_scaled, dtype=torch.float32).to(self.device))
+        with torch.inference_mode():
+            tensor = torch.from_numpy(
+                features_scaled.astype(np.float32, copy=False)
+            ).to(self.device)
+            logits = self.family_model(tensor)
             proba = torch.softmax(logits, dim=1).cpu().numpy()[0]
         idx = int(proba.argmax())
         confidence = float(proba[idx])
@@ -154,12 +188,24 @@ class Predictor:
             dropout=mlp_config["dropout"],
             embed_dim=mlp_config["embed_dim"],
         ).to(self.device)
-        self.mlp_model.load_state_dict(torch.load(mlp_path, map_location=self.device))
+        self.mlp_model.load_state_dict(
+            torch.load(mlp_path, map_location=self.device, weights_only=True)
+        )
         self.mlp_model.eval()
 
         with open(scaler_path, "rb") as f:
             self.scaler = pickle.load(f)
 
+        self.model_provenance_verified, self.model_provenance_warning = (
+            verify_evaluated_artifacts(
+                EVALUATION_MANIFEST_PATH,
+                {
+                    lightgbm_path.name: lightgbm_path,
+                    mlp_path.name: mlp_path,
+                    scaler_path.name: scaler_path,
+                },
+            )
+        )
         return True
 
     def predict(self, filename: str, content: bytes) -> DetectionResult:
@@ -224,10 +270,11 @@ class Predictor:
         p_lgbm = float(self.lgbm_model.predict(features)[0])
 
         features_scaled = self.scaler.transform(features)
-        with torch.no_grad():
-            logit, attn = self.mlp_model(
-                torch.tensor(features_scaled, dtype=torch.float32).to(self.device), return_attn=True
-            )
+        with torch.inference_mode():
+            tensor = torch.from_numpy(
+                features_scaled.astype(np.float32, copy=False)
+            ).to(self.device)
+            logit, attn = self.mlp_model(tensor, return_attn=True)
             p_mlp = float(torch.sigmoid(logit).cpu().item())
             attn_weights = attn[0].cpu().numpy()
 
