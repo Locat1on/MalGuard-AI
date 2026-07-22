@@ -11,18 +11,23 @@ CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
 METRICS_FILE = CHECKPOINTS_DIR / "metrics.json"
 MANIFEST_FILE = CHECKPOINTS_DIR / "evaluation_manifest.json"
 
-STUB_METRICS = [
-    ModelMetric(model="LightGBM (EMBER 静态特征基线) [占位数据]", accuracy=0, precision=0, recall=0, f1=0),
-    ModelMetric(model="MLP 深度模型 (本系统) [占位数据]", accuracy=0, precision=0, recall=0, f1=0),
-]
-
-
 @router.get("/metrics", response_model=list[ModelMetric])
 async def get_metrics() -> list[ModelMetric]:
-    if METRICS_FILE.exists():
+    if not METRICS_FILE.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="正式评估指标尚未生成，请先运行 compare_models.py。",
+        )
+    try:
         data = json.loads(METRICS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, list) or not data:
+            raise ValueError("metrics.json must contain a non-empty list")
         return [ModelMetric(**row) for row in data]
-    return STUB_METRICS
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail="正式评估指标文件不可用，请重新运行 compare_models.py。",
+        ) from error
 
 
 @router.get("/metrics/provenance")

@@ -580,6 +580,39 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(stats_response.status_code, 200)
         self.assertIn("modelDisagreements", stats_response.json())
 
+    def test_metrics_endpoint_never_returns_placeholder_scores(self) -> None:
+        client = TestClient(app)
+        metrics_module = sys.modules["app.routers.metrics"]
+        with tempfile.TemporaryDirectory() as directory:
+            metrics_path = Path(directory) / "metrics.json"
+            with patch.object(metrics_module, "METRICS_FILE", metrics_path):
+                missing = client.get("/api/metrics")
+                self.assertEqual(missing.status_code, 404)
+                self.assertIn("尚未生成", missing.json()["detail"])
+
+                metrics_path.write_text("{broken-json", encoding="utf-8")
+                invalid = client.get("/api/metrics")
+                self.assertEqual(invalid.status_code, 503)
+                self.assertIn("文件不可用", invalid.json()["detail"])
+
+                metrics_path.write_text(
+                    json.dumps(
+                        [
+                            {
+                                "model": "verified",
+                                "accuracy": 0.9,
+                                "precision": 0.8,
+                                "recall": 0.7,
+                                "f1": 0.75,
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                valid = client.get("/api/metrics")
+                self.assertEqual(valid.status_code, 200)
+                self.assertEqual(valid.json()[0]["model"], "verified")
+
     def test_metrics_provenance_endpoint(self) -> None:
         client = TestClient(app)
         metrics_module = sys.modules["app.routers.metrics"]
