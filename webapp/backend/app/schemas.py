@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Verdict = Literal["malicious", "benign"]
 
@@ -121,8 +121,8 @@ class HistoryStats(BaseModel):
 
 
 class ModelMetric(BaseModel):
-    model: str
-    accuracy: float
-    precision: float
-    recall: float
-    f1: float
+    model: str = Field(min_length=1)
+    accuracy: float = Field(ge=0, le=1)
+    precision: float = Field(ge=0, le=1)
+    recall: float = Field(ge=0, le=1)
+    f1: float = Field(ge=0, le=1)

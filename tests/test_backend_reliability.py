@@ -628,6 +628,23 @@ class PredictorReliabilityTests(unittest.TestCase):
                     json.dumps(
                         [
                             {
+                                "model": "invalid",
+                                "accuracy": 1.01,
+                                "precision": 0.8,
+                                "recall": 0.7,
+                                "f1": 0.75,
+                            }
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                out_of_range = client.get("/api/metrics")
+                self.assertEqual(out_of_range.status_code, 503)
+
+                metrics_path.write_text(
+                    json.dumps(
+                        [
+                            {
                                 "model": "verified",
                                 "accuracy": 0.9,
                                 "precision": 0.8,
