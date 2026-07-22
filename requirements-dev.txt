@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# FastAPI/Starlette TestClient; not required by the running backend.
+httpx2>=2,<3

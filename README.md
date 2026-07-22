@@ -136,6 +136,7 @@ $env:MALGUARD_API_KEY = [BitConverter]::ToString($bytes).Replace("-", "")
 ## 测试
 
 ```powershell
+uv pip install -p .venv -r requirements-dev.txt
 .venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
 
