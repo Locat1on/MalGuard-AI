@@ -43,6 +43,8 @@ from src.reproducibility import (
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 MODEL_PATH = CHECKPOINT_DIR / "mlp.pt"
 SCALER_PATH = CHECKPOINT_DIR / "scaler.pkl"
+STAGED_MODEL_PATH = CHECKPOINT_DIR / ".mlp.training.pt"
+STAGED_SCALER_PATH = CHECKPOINT_DIR / ".scaler.training.pkl"
 MANIFEST_PATH = CHECKPOINT_DIR / "mlp_training_manifest.json"
 SCALER_FIT_BATCH_SIZE = 8192
 
@@ -123,6 +125,19 @@ def evaluate(
     }
 
 
+def _atomic_save_state_dict(model: nn.Module, path: Path) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    torch.save(model.state_dict(), temp_path)
+    temp_path.replace(path)
+
+
+def _atomic_save_pickle(value: object, path: Path) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("wb") as file:
+        pickle.dump(value, file)
+    temp_path.replace(path)
+
+
 def train() -> None:
     source_git = git_manifest()
     config = load_config("mlp")
@@ -164,6 +179,9 @@ def train() -> None:
     best_epoch = 0
     stale_epochs = 0
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    STAGED_MODEL_PATH.unlink(missing_ok=True)
+    STAGED_SCALER_PATH.unlink(missing_ok=True)
+    _atomic_save_pickle(scaler, STAGED_SCALER_PATH)
 
     for epoch in range(1, config["epochs"] + 1):
         model.train()
@@ -188,9 +206,7 @@ def train() -> None:
             best_metrics = val_metrics
             best_epoch = epoch
             stale_epochs = 0
-            torch.save(model.state_dict(), MODEL_PATH)
-            with SCALER_PATH.open("wb") as file:
-                pickle.dump(scaler, file)
+            _atomic_save_state_dict(model, STAGED_MODEL_PATH)
         else:
             stale_epochs += 1
             if stale_epochs >= config["patience"]:
@@ -199,6 +215,12 @@ def train() -> None:
 
     if best_metrics is None:
         raise RuntimeError("training completed without a validation result")
+
+    # Publish only after the full train/validation loop completes successfully.
+    # Existing deployment artifacts remain untouched if training is interrupted.
+    STAGED_SCALER_PATH.replace(SCALER_PATH)
+    STAGED_MODEL_PATH.replace(MODEL_PATH)
+
     manifest = {
         "model": "MalwareMLP feature-group attention fusion",
         "config": config,

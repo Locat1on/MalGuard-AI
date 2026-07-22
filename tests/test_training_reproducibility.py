@@ -1,4 +1,5 @@
 import json
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +19,11 @@ from src.models.train_family import (
     make_indexed_loader,
     select_family_indices,
 )
-from src.models.train_mlp import fit_scaler_incrementally
+from src.models.train_mlp import (
+    _atomic_save_pickle,
+    _atomic_save_state_dict,
+    fit_scaler_incrementally,
+)
 from src.models.training_utils import TorchStandardizer
 from src.reproducibility import artifact_manifest, write_json_atomic
 
@@ -125,6 +130,33 @@ class MemorySafeTrainingTests(unittest.TestCase):
         self.assertEqual(metrics["precision"], 0.5)
         self.assertEqual(metrics["recall"], 0.5)
         self.assertEqual(metrics["f1"], 0.5)
+
+    def test_mlp_artifacts_are_staged_before_publish(self) -> None:
+        model = torch.nn.Linear(3, 1)
+        scaler = StandardScaler().fit(
+            np.array([[0.0, 1.0, 2.0], [2.0, 3.0, 4.0]], dtype=np.float32)
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deployed_model = root / "mlp.pt"
+            deployed_scaler = root / "scaler.pkl"
+            staged_model = root / ".mlp.training.pt"
+            staged_scaler = root / ".scaler.training.pkl"
+            deployed_model.write_bytes(b"current-model")
+            deployed_scaler.write_bytes(b"current-scaler")
+
+            _atomic_save_state_dict(model, staged_model)
+            _atomic_save_pickle(scaler, staged_scaler)
+            self.assertEqual(deployed_model.read_bytes(), b"current-model")
+            self.assertEqual(deployed_scaler.read_bytes(), b"current-scaler")
+            self.assertEqual(
+                set(torch.load(staged_model, weights_only=True)),
+                set(model.state_dict()),
+            )
+            with staged_scaler.open("rb") as file:
+                staged_scaler_value = pickle.load(file)
+            np.testing.assert_allclose(staged_scaler_value.mean_, scaler.mean_)
 
     def test_family_checkpoint_stages_embedded_labels_before_publish(self) -> None:
         labels = ["Example", "其他"]

@@ -14,6 +14,10 @@ checkpoints/.family_mlp.training.pt
 checkpoints/.family_mlp.training.pt.tmp
 checkpoints/.family_labels.training.json
 checkpoints/.family_labels.training.json.tmp
+checkpoints/.mlp.training.pt
+checkpoints/.mlp.training.pt.tmp
+checkpoints/.scaler.training.pkl
+checkpoints/.scaler.training.pkl.tmp
 
 # Ablation run logs (the trained models + metrics json are committed; logs are not)
 checkpoints/ablation/*.log
