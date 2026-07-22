@@ -21,6 +21,7 @@
 - `DetectionResult.historyId: number | null`
 - `DetectionResult.featureAttention: FeatureAttention[] | null`
 - `FeatureAttention { group, label, weight }`
+- `HistoryRecord.featureAttention: FeatureAttention[]`（批量检测和迁移前旧记录为空数组）
 - `HealthStatus`（含 `inferenceConcurrency`、`detectionConcurrency`、`apiKeyRequired`）、`HistoryStats`
 - 批量检测的 `BatchItem`、`BatchDetectionResult`
 - 历史记录 ID 统一使用 `number`，不要在 API 层转成随机字符串。
@@ -66,6 +67,7 @@
 
 - 请求 `GET /api/history/stats`，在表格上方展示总数、恶意/良性、模型分歧、LLM 分歧。
 - 历史行增加来源（单文件/批量）、模型一致性、家族置信度。
+- 历史详情读取 `featureAttention`，沿用“特征组融合权重/模型内部关注权重”的非因果措辞；数组为空时隐藏该区块，不补零。HTML 报告已由后端直接包含该表格。
 - 增加查看详情、打开 `/api/history/{id}/report`、下载 `/api/history/backup`、删除单条和清空历史。
 - 删除操作需要确认；失败时保留现有列表并显示错误。
 - 数据较多时使用 `limit/offset` 分页，不一次拉取全部；读取列表响应头 `X-Total-Count` 计算总页数，即使当前页为空也不要把总数误判为 0。

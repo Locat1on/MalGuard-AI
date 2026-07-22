@@ -32,7 +32,7 @@ from app.predictor import (
     validate_core_feature_contract,
     verify_evaluated_artifacts,
 )
-from app.schemas import AttckTag, DetectionResult
+from app.schemas import AttckTag, DetectionResult, FeatureAttention
 from src.models.family_checkpoint import build_family_checkpoint
 from app.settings import (
     DEFAULT_CORS_ORIGINS,
@@ -1183,6 +1183,31 @@ class PredictorReliabilityTests(unittest.TestCase):
         self.assertEqual(len(response.json()["results"]), 3)
 
 class HistoryReliabilityTests(unittest.TestCase):
+    def test_feature_attention_column_migrates_with_empty_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "history.db"
+            with closing(sqlite3.connect(db_path)) as conn, conn:
+                conn.execute(
+                    "CREATE TABLE detections ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, family_confidence REAL)"
+                )
+
+            with patch("app.history.DB_PATH", db_path):
+                history.init_db()
+                with closing(sqlite3.connect(db_path)) as conn, conn:
+                    columns = {
+                        row[1]: row for row in conn.execute(
+                            "PRAGMA table_info(detections)"
+                        )
+                    }
+                    conn.execute("INSERT INTO detections DEFAULT VALUES")
+                    default_value = conn.execute(
+                        "SELECT feature_attention FROM detections"
+                    ).fetchone()[0]
+
+        self.assertIn("feature_attention", columns)
+        self.assertEqual(default_value, "[]")
+
     def test_report_distinguishes_batch_from_unavailable_single_llm(self) -> None:
         unavailable = _result().model_copy(
             update={
@@ -1212,7 +1237,25 @@ class HistoryReliabilityTests(unittest.TestCase):
             db_path = Path(directory) / "history.db"
             with patch("app.history.DB_PATH", db_path):
                 history.init_db()
-                first_id = history.record(_result(), "single", "a" * 64)
+                result_with_attention = _result().model_copy(
+                    update={
+                        "featureAttention": [
+                            FeatureAttention(
+                                group="imports",
+                                label="导入表 <script>alert(2)</script>",
+                                weight=0.7,
+                            ),
+                            FeatureAttention(
+                                group="section",
+                                label="节区信息",
+                                weight=0.3,
+                            ),
+                        ]
+                    }
+                )
+                first_id = history.record(
+                    result_with_attention, "single", "a" * 64
+                )
                 second_id = history.record(
                     _result("benign.exe", "benign"), "batch", "b" * 64
                 )
@@ -1233,6 +1276,11 @@ class HistoryReliabilityTests(unittest.TestCase):
                 empty_page = client.get("/api/history?limit=1&offset=2")
                 self.assertEqual(empty_page.json(), [])
                 self.assertEqual(empty_page.headers["x-total-count"], "2")
+
+                saved = history.get(first_id)
+                self.assertEqual(len(saved["featureAttention"]), 2)
+                self.assertEqual(saved["featureAttention"][0]["group"], "imports")
+                self.assertEqual(first_page.json()[0]["featureAttention"], [])
 
                 stats = history.stats()
                 self.assertEqual(stats["total"], 2)
@@ -1274,6 +1322,10 @@ class HistoryReliabilityTests(unittest.TestCase):
                 report = history.render_report_html(history.get(first_id))
                 self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", report)
                 self.assertNotIn("<script>alert(1)</script>", report)
+                self.assertIn("特征组融合权重", report)
+                self.assertIn("70.0%", report)
+                self.assertIn("导入表 &lt;script&gt;alert(2)&lt;/script&gt;", report)
+                self.assertNotIn("<script>alert(2)</script>", report)
                 self.assertTrue(history.delete(second_id))
                 self.assertEqual(history.clear(), 1)
                 self.assertEqual(history.stats()["total"], 0)

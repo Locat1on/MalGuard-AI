@@ -90,6 +90,7 @@ class HistoryRecord(BaseModel):
     llmConfidence: float | None
     llmReport: str
     attck: list[AttckTag]
+    featureAttention: list[FeatureAttention]
 
 
 class HealthStatus(BaseModel):

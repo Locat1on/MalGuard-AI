@@ -113,12 +113,13 @@ interface HistoryRecord {
   llmConfidence: number | null;
   llmReport: string;                            // 批量记录为空串
   attck: { tactic: string; technique: string }[];
+  featureAttention: FeatureAttention[];  // 单文件通常 12 项；批量和旧记录为空数组
 }
 ```
 
 ## 4. 报告导出（新增）
 
-`GET /api/history/{id}/report` → 自包含 HTML（`Content-Type: text/html`，无外部依赖）。
+`GET /api/history/{id}/report` → 自包含 HTML（`Content-Type: text/html`，无外部依赖）。单文件报告会按权重降序展示已持久化的特征组融合权重，并明确它不是因果归因；批量或迁移前的旧记录显示无权重数据。
 
 未启用 API Key 时可直接在新标签页打开，浏览器「打印 → 另存为 PDF」即得 PDF 报告。启用鉴权后普通链接无法附加请求头，前端必须用带密钥的 `fetch` 获取 HTML 并通过临时 Blob URL 打开。
 

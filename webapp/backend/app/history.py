@@ -53,15 +53,20 @@ def init_db() -> None:
                 llm_verdict    TEXT,
                 llm_confidence REAL,
                 llm_report     TEXT    NOT NULL,
-                attck          TEXT    NOT NULL
+                attck          TEXT    NOT NULL,
+                feature_attention TEXT NOT NULL DEFAULT '[]'
             )
             """
         )
-        # Migrate DBs created before family_confidence existed (the file is regenerable, but
-        # an ALTER keeps any accumulated demo history intact rather than requiring a wipe).
+        # Preserve demo history created by earlier schema versions.
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(detections)")}
         if "family_confidence" not in columns:
             conn.execute("ALTER TABLE detections ADD COLUMN family_confidence REAL")
+        if "feature_attention" not in columns:
+            conn.execute(
+                "ALTER TABLE detections ADD COLUMN feature_attention "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
 
 
 def backup_to(destination: Path) -> None:
@@ -90,8 +95,8 @@ _INSERT_SQL = """
     INSERT INTO detections (
         created_at, filename, sha256, source, verdict, confidence, family, family_confidence,
         lgbm_score, mlp_score, model_agreement, llm_verdict, llm_confidence,
-        llm_report, attck
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        llm_report, attck, feature_attention
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -112,6 +117,10 @@ def _row_values(result: DetectionResult, source: str, sha256: str) -> tuple:
         result.llmConfidence,
         result.llmReport,
         json.dumps([t.model_dump() for t in result.attck], ensure_ascii=False),
+        json.dumps(
+            [item.model_dump() for item in result.featureAttention or []],
+            ensure_ascii=False,
+        ),
     )
 
 
@@ -155,6 +164,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         "llmConfidence": row["llm_confidence"],
         "llmReport": row["llm_report"],
         "attck": json.loads(row["attck"]),
+        "featureAttention": json.loads(row["feature_attention"]),
     }
 
 
@@ -252,6 +262,21 @@ def render_report_html(rec: dict) -> str:
         if attck_rows
         else "<p class='muted'>无 ATT&amp;CK 标签。</p>"
     )
+    attention_rows = "".join(
+        f"<tr><td>{escape(item['label'])}</td><td>{escape(item['group'])}</td>"
+        f"<td>{item['weight'] * 100:.1f}%</td></tr>"
+        for item in sorted(
+            rec.get("featureAttention", []),
+            key=lambda item: item["weight"],
+            reverse=True,
+        )
+    )
+    attention_table = (
+        "<table><thead><tr><th>特征组</th><th>内部名称</th><th>融合权重</th></tr>"
+        f"</thead><tbody>{attention_rows}</tbody></table>"
+        if attention_rows
+        else "<p class='muted'>本条记录没有特征组融合权重（批量检测或旧记录）。</p>"
+    )
     report_text = escape(rec["llmReport"]) or "<span class='muted'>（无）</span>"
 
     return f"""<!doctype html>
@@ -291,6 +316,9 @@ def render_report_html(rec: dict) -> str:
     <div>模型一致性</div><div>{'一致' if rec['modelAgreement'] == 'agree' else '不一致'}</div>
     <div>LLM 判定</div><div>{escape(llm_line)}</div>
   </div>
+  <h2>特征组融合权重</h2>
+  <p class="muted">该权重反映 MLP 内部的特征融合关注程度，不代表因果归因。</p>
+  {attention_table}
   <h2>ATT&amp;CK 标签</h2>
   {attck_table}
   <h2>LLM 静态风险说明</h2>
