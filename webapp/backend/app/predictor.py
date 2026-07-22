@@ -92,6 +92,32 @@ class FeatureExtractionError(Exception):
     """
 
 
+def _validate_probability_vector(
+    values: object,
+    expected_count: int,
+    model_name: str,
+) -> np.ndarray:
+    """Reject malformed model output instead of turning it into a false verdict."""
+    try:
+        probabilities = np.asarray(values, dtype=np.float64)
+    except (TypeError, ValueError) as error:
+        raise ModelUnavailableError(
+            f"{model_name} 推理输出无法转换为概率。"
+        ) from error
+    if probabilities.shape != (expected_count,):
+        raise ModelUnavailableError(
+            f"{model_name} 推理输出形状无效：期望 {(expected_count,)}，"
+            f"实际 {probabilities.shape}。"
+        )
+    if not np.isfinite(probabilities).all() or np.any(
+        (probabilities < 0) | (probabilities > 1)
+    ):
+        raise ModelUnavailableError(
+            f"{model_name} 推理输出包含非有限值或超出 0 到 1 的概率。"
+        )
+    return probabilities
+
+
 class Predictor:
     def __init__(self) -> None:
         # Stub output is opt-in: normal runs must fail visibly when real checkpoints are absent
@@ -249,12 +275,18 @@ class Predictor:
             raise ValueError("filenames and feature_rows must form an aligned 2D batch")
 
         with self._inference_slots:
-            lgbm_scores = np.asarray(self.lgbm_model.predict(features), dtype=np.float64)
+            lgbm_scores = _validate_probability_vector(
+                self.lgbm_model.predict(features), len(filenames), "LightGBM"
+            )
             features_scaled = self.scaler.transform(features).astype(np.float32, copy=False)
             with torch.inference_mode():
                 tensor = torch.from_numpy(features_scaled).to(self.device)
                 mlp_logits = self.mlp_model(tensor)
-                mlp_scores = torch.sigmoid(mlp_logits).float().cpu().numpy().reshape(-1)
+                mlp_scores = _validate_probability_vector(
+                    torch.sigmoid(mlp_logits).float().cpu().numpy().reshape(-1),
+                    len(filenames),
+                    "MLP",
+                )
 
                 ensemble_scores = (lgbm_scores + mlp_scores) / 2
                 malicious_mask = ensemble_scores >= 0.5
@@ -326,7 +358,11 @@ class Predictor:
         features = self.extract_feature_vector(content).reshape(1, -1)
 
         with self._inference_slots:
-            p_lgbm = float(self.lgbm_model.predict(features)[0])
+            p_lgbm = float(
+                _validate_probability_vector(
+                    self.lgbm_model.predict(features), 1, "LightGBM"
+                )[0]
+            )
 
             features_scaled = self.scaler.transform(features)
             with torch.inference_mode():
@@ -334,7 +370,13 @@ class Predictor:
                     features_scaled.astype(np.float32, copy=False)
                 ).to(self.device)
                 logit, attn = self.mlp_model(tensor, return_attn=True)
-                p_mlp = float(torch.sigmoid(logit).cpu().item())
+                p_mlp = float(
+                    _validate_probability_vector(
+                        torch.sigmoid(logit).float().cpu().numpy().reshape(-1),
+                        1,
+                        "MLP",
+                    )[0]
+                )
                 attn_weights = attn[0].cpu().numpy()
 
             is_malicious = (p_lgbm + p_mlp) / 2 >= 0.5

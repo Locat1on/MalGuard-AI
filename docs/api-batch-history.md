@@ -147,7 +147,7 @@ interface HealthStatus {
 }
 ```
 
-`GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失或架构不兼容时，检测接口也返回 503，不再默认返回伪造结果。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
+`GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失、架构不兼容，或 LightGBM/MLP 返回非有限值、越界概率及错误形状时，检测接口也返回 503，不再默认返回伪造结果或形成不可信结论。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
 
 `modelProvenanceVerified=false` 不会阻断检测，但表示当前加载的 `lightgbm.txt`、`mlp.pt` 或 `scaler.pkl` 与 `evaluation_manifest.json` 不一致，此时指标页不能把现有正式分数视为当前部署模型的成绩；应重新运行 `src/eval/compare_models.py`。值为 `null` 表示缺少或无法读取来源清单。
 

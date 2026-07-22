@@ -456,6 +456,58 @@ class PredictorReliabilityTests(unittest.TestCase):
             ["first.exe", "second.exe"],
         )
 
+    def test_invalid_model_probabilities_fail_closed(self) -> None:
+        class FakeLightGBM:
+            def __init__(self, output) -> None:
+                self.output = output
+
+            def predict(self, features):
+                return self.output
+
+        class IdentityScaler:
+            @staticmethod
+            def transform(features):
+                return features
+
+        class FakeMLP:
+            def __init__(self, logit: float = 0.0) -> None:
+                self.logit = logit
+
+            def __call__(self, tensor):
+                return torch.full(
+                    (len(tensor), 1), self.logit, dtype=torch.float32
+                )
+
+        instance = Predictor.__new__(Predictor)
+        instance.models_loaded = True
+        instance.model_load_error = None
+        instance.device = torch.device("cpu")
+        instance.family_model_loaded = False
+        instance.scaler = IdentityScaler()
+        instance.mlp_model = FakeMLP()
+        instance._inference_slots = threading.BoundedSemaphore(1)
+        features = [np.array([0.1, 0.2], dtype=np.float32)]
+
+        for invalid_output in (
+            np.array([np.nan]),
+            np.array([1.1]),
+            np.array([[0.9]]),
+        ):
+            with self.subTest(lightgbm_output=invalid_output):
+                instance.lgbm_model = FakeLightGBM(invalid_output)
+                with self.assertRaisesRegex(ModelUnavailableError, "LightGBM"):
+                    instance.predict_features_ml_only(["sample.exe"], features)
+
+        instance.extract_feature_vector = lambda content: features[0]
+        instance.lgbm_model = FakeLightGBM(np.array([np.nan]))
+        with self.assertRaisesRegex(ModelUnavailableError, "LightGBM"):
+            instance._score(b"MZ")
+
+        instance.lgbm_model = FakeLightGBM(np.array([0.9]))
+        instance.mlp_model = FakeMLP(float("nan"))
+        with self.assertRaisesRegex(ModelUnavailableError, "MLP"):
+            instance.predict_features_ml_only(["sample.exe"], features)
+
     def test_shared_models_respect_inference_concurrency_limit(self) -> None:
         class FakeLightGBM:
             @staticmethod
@@ -618,6 +670,24 @@ class PredictorReliabilityTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 503)
         self.assertIn("checkpoint mismatch", response.json()["detail"])
+
+    def test_runtime_model_failure_returns_503(self) -> None:
+        client = TestClient(app)
+        predictor = sys.modules["app.routers.detect"].predictor
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(
+                predictor,
+                "predict",
+                side_effect=ModelUnavailableError("LightGBM 推理输出无效。"),
+            ),
+        ):
+            response = client.post(
+                "/api/detect",
+                files={"file": ("sample.exe", b"MZ", "application/octet-stream")},
+            )
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("LightGBM", response.json()["detail"])
 
     def test_health_and_ready_expose_real_state(self) -> None:
         client = TestClient(app)
