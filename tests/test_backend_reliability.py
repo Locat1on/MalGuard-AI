@@ -69,6 +69,46 @@ def _result(filename: str = "sample.exe", verdict: str = "malicious") -> Detecti
     )
 
 
+def _evaluation_manifest() -> dict:
+    results = [
+        {
+            "model": model,
+            "accuracy": 0.9,
+            "precision": 0.8,
+            "recall": 0.7,
+            "f1": 0.75,
+            "confusion_matrix": [[1, 0], [0, 1]],
+        }
+        for model in ("LightGBM", "MLP", "Ensemble")
+    ]
+    return {
+        "protocol": {
+            "dataset": "test split",
+            "feature_dimensions": 2568,
+            "threshold": 0.5,
+            "ensemble": "arithmetic mean",
+            "inference_batch_size": 32,
+            "test_rows": 2,
+            "test_malicious": 1,
+            "test_benign": 1,
+        },
+        "results": results,
+        "artifacts": {
+            "lightgbm.txt": {"sha256": "a" * 64, "size_bytes": 1},
+            "mlp.pt": {"sha256": "b" * 64, "size_bytes": 2},
+            "scaler.pkl": {"sha256": "c" * 64, "size_bytes": 3},
+        },
+        "runtime": {
+            "generated_at_utc": "2026-01-01T00:00:00+00:00",
+            "python": "3.11",
+            "platform": "test",
+            "packages": {},
+            "cuda_available": False,
+            "cuda_device": None,
+        },
+        "git": {"commit": None, "branch": None, "dirty": None},
+    }
+
 class RuntimeSettingsTests(unittest.TestCase):
     def test_defaults_and_custom_origins_are_normalized(self) -> None:
         settings = Settings.from_environ({})
@@ -925,51 +965,47 @@ class PredictorReliabilityTests(unittest.TestCase):
                 self.assertIn("尚未生成", missing.json()["detail"])
 
                 manifest_path.write_text("{broken-json", encoding="utf-8")
-                invalid = client.get("/api/metrics")
-                self.assertEqual(invalid.status_code, 503)
-                self.assertIn("来源清单不可用", invalid.json()["detail"])
+                invalid_json = client.get("/api/metrics")
+                self.assertEqual(invalid_json.status_code, 503)
+                self.assertIn("来源清单不可用", invalid_json.json()["detail"])
 
+                incomplete = _evaluation_manifest()
+                del incomplete["runtime"]
                 manifest_path.write_text(
-                    json.dumps(
-                        {
-                            "results": [
-                                {
-                                    "model": "invalid",
-                                    "accuracy": 1.01,
-                                    "precision": 0.8,
-                                    "recall": 0.7,
-                                    "f1": 0.75,
-                                }
-                            ]
-                        }
-                    ),
-                    encoding="utf-8",
+                    json.dumps(incomplete), encoding="utf-8"
                 )
-                out_of_range = client.get("/api/metrics")
-                self.assertEqual(out_of_range.status_code, 503)
+                incomplete_response = client.get("/api/metrics")
+                self.assertEqual(incomplete_response.status_code, 503)
+
+                out_of_range = _evaluation_manifest()
+                out_of_range["results"][0]["accuracy"] = 1.01
+                manifest_path.write_text(
+                    json.dumps(out_of_range), encoding="utf-8"
+                )
+                out_of_range_response = client.get("/api/metrics")
+                self.assertEqual(out_of_range_response.status_code, 503)
+
+                inconsistent = _evaluation_manifest()
+                inconsistent["results"][1]["confusion_matrix"] = [
+                    [0, 0],
+                    [1, 1],
+                ]
+                manifest_path.write_text(
+                    json.dumps(inconsistent), encoding="utf-8"
+                )
+                inconsistent_response = client.get("/api/metrics")
+                self.assertEqual(inconsistent_response.status_code, 503)
 
                 manifest_path.write_text(
-                    json.dumps(
-                        {
-                            "results": [
-                                {
-                                    "model": "verified",
-                                    "accuracy": 0.9,
-                                    "precision": 0.8,
-                                    "recall": 0.7,
-                                    "f1": 0.75,
-                                    "confusion_matrix": [[1, 0], [0, 1]],
-                                }
-                            ]
-                        }
-                    ),
-                    encoding="utf-8",
+                    json.dumps(_evaluation_manifest()), encoding="utf-8"
                 )
                 valid = client.get("/api/metrics")
                 self.assertEqual(valid.status_code, 200)
-                self.assertEqual(valid.json()[0]["model"], "verified")
+                self.assertEqual(len(valid.json()), 3)
+                self.assertEqual(valid.json()[0]["model"], "LightGBM")
+                self.assertNotIn("confusion_matrix", valid.json()[0])
 
-    def test_metrics_provenance_endpoint(self) -> None:
+    def test_metrics_provenance_endpoint_validates_complete_manifest(self) -> None:
         client = TestClient(app)
         metrics_module = sys.modules["app.routers.metrics"]
         with tempfile.TemporaryDirectory() as directory:
@@ -982,10 +1018,16 @@ class PredictorReliabilityTests(unittest.TestCase):
                     '{"protocol":{"test_rows":240000},"artifacts":[]}',
                     encoding="utf-8",
                 )
+                incomplete = client.get("/api/metrics/provenance")
+                self.assertEqual(incomplete.status_code, 503)
+
+                manifest_path.write_text(
+                    json.dumps(_evaluation_manifest()), encoding="utf-8"
+                )
                 response = client.get("/api/metrics/provenance")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["protocol"]["test_rows"], 240000)
-
+        self.assertEqual(response.json()["protocol"]["test_rows"], 2)
+        self.assertEqual(len(response.json()["results"]), 3)
 
 class HistoryReliabilityTests(unittest.TestCase):
     def test_report_distinguishes_batch_from_unavailable_single_llm(self) -> None:

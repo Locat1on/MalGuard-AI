@@ -191,7 +191,7 @@ interface HistoryStats {
 
 ## 8. 指标来源与请求追踪（新增）
 
-`GET /api/metrics` 从 `evaluation_manifest.json.results` 返回三行正式评估结果：LightGBM、MLP、实际部署使用的二者算术平均集成。缺少来源清单时返回 404，清单损坏或指标结构无效时返回 503；接口不会用全零占位数据伪装成正式指标。`metrics.json` 仍作为评估导出文件保留，但不再是后端的独立数据源。
+`GET /api/metrics` 从 `evaluation_manifest.json.results` 返回三行正式评估结果：LightGBM、MLP、实际部署使用的二者算术平均集成。缺少来源清单时返回 404；JSON 损坏、协议/运行环境/Git 来源缺失、三项核心 artifact 不完整、指标越界，或混淆矩阵与测试集类别计数不一致时返回 503。接口不会用全零占位数据或部分清单伪装成正式指标。`metrics.json` 仍作为评估导出文件保留，但不再是后端的独立数据源。
 
 `GET /api/metrics/provenance` 返回 `checkpoints/evaluation_manifest.json`，包含：
 - 官方测试集名称、样本数、类别数、阈值、集成规则和推理批大小；

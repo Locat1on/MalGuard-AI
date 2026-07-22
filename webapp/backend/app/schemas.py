@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Verdict = Literal["malicious", "benign"]
 
@@ -126,3 +126,78 @@ class ModelMetric(BaseModel):
     precision: float = Field(ge=0, le=1)
     recall: float = Field(ge=0, le=1)
     f1: float = Field(ge=0, le=1)
+
+
+class EvaluationMetric(ModelMetric):
+    confusion_matrix: tuple[tuple[int, int], tuple[int, int]]
+
+    @field_validator("confusion_matrix")
+    @classmethod
+    def validate_confusion_matrix(
+        cls,
+        matrix: tuple[tuple[int, int], tuple[int, int]],
+    ) -> tuple[tuple[int, int], tuple[int, int]]:
+        if any(value < 0 for row in matrix for value in row):
+            raise ValueError("confusion matrix counts must be non-negative")
+        return matrix
+
+
+class EvaluationProtocol(BaseModel):
+    dataset: str = Field(min_length=1)
+    feature_dimensions: int = Field(gt=0)
+    threshold: float = Field(ge=0, le=1)
+    ensemble: str = Field(min_length=1)
+    inference_batch_size: int = Field(gt=0)
+    test_rows: int = Field(gt=0)
+    test_malicious: int = Field(ge=0)
+    test_benign: int = Field(ge=0)
+
+
+class EvaluationArtifact(BaseModel):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(gt=0)
+
+
+class EvaluationRuntime(BaseModel):
+    generated_at_utc: str = Field(min_length=1)
+    python: str = Field(min_length=1)
+    platform: str = Field(min_length=1)
+    packages: dict[str, str | None]
+    cuda_available: bool
+    cuda_device: str | None
+
+
+class EvaluationGit(BaseModel):
+    commit: str | None
+    branch: str | None
+    dirty: bool | None
+
+
+class EvaluationManifest(BaseModel):
+    protocol: EvaluationProtocol
+    results: list[EvaluationMetric] = Field(min_length=3, max_length=3)
+    artifacts: dict[str, EvaluationArtifact]
+    runtime: EvaluationRuntime
+    git: EvaluationGit
+
+    @model_validator(mode="after")
+    def validate_consistency(self) -> "EvaluationManifest":
+        protocol = self.protocol
+        if protocol.test_rows != protocol.test_malicious + protocol.test_benign:
+            raise ValueError("test class counts do not add up to test_rows")
+        if len({result.model for result in self.results}) != len(self.results):
+            raise ValueError("evaluation model names must be unique")
+        for result in self.results:
+            benign_rows = sum(result.confusion_matrix[0])
+            malicious_rows = sum(result.confusion_matrix[1])
+            if (
+                benign_rows != protocol.test_benign
+                or malicious_rows != protocol.test_malicious
+            ):
+                raise ValueError(
+                    f"{result.model} confusion matrix does not match class counts"
+                )
+        required_artifacts = {"lightgbm.txt", "mlp.pt", "scaler.pkl"}
+        if not required_artifacts.issubset(self.artifacts):
+            raise ValueError("evaluation artifacts are incomplete")
+        return self
