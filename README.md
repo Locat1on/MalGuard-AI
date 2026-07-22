@@ -38,6 +38,7 @@ cd webapp/backend
 - `MALGUARD_CORS_ORIGINS`：允许直接调用 API 的前端来源，使用逗号分隔；默认允许 `http://localhost:5173` 和 `http://127.0.0.1:5173`，不接受 `*`。
 - `MALGUARD_INFERENCE_CONCURRENCY`：共享模型可同时执行的推理数，范围 1～8，默认 1。单 GPU 演示建议保留 1；只有经过显存和吞吐压测后再提高。
 - `MALGUARD_API_KEY`：可选的 ASCII 密钥，至少 16 字符。配置后，`/api/detect*` 和 `/api/history*` 必须携带 `X-API-Key`；health、ready 和 metrics 保持公开。未配置时维持本地免鉴权模式。
+- `MALGUARD_HISTORY_DB`：可选的 SQLite 路径；相对路径按仓库根目录解析，默认 `data/history.db`。适合把运行数据放到独立磁盘或持久化卷。
 
 ### 2. 前端
 
@@ -124,6 +125,12 @@ $env:MALGUARD_API_KEY = [BitConverter]::ToString($bytes).Replace("-", "")
 ```
 
 客户端通过 `X-API-Key` 请求头发送密钥。API Key 不能替代 HTTPS；跨越不可信网络时必须由反向代理提供 TLS，不能把密钥放入 URL 查询参数或前端构建产物。
+
+## 历史备份与恢复
+
+`GET /api/history/backup` 使用 SQLite 原生在线备份 API 生成事务一致的独立 `.db` 快照，不需要暂停检测；启用 API Key 时该接口同样需要 `X-API-Key`。
+
+恢复不提供在线 API，避免误覆盖正在使用的数据库。恢复时应先完全停止后端，保留当前数据库及同名 `-wal`、`-shm` 边车文件的副本，再将下载的快照放到 `MALGUARD_HISTORY_DB` 指向的位置，最后重启并检查历史列表。不要在后端运行期间直接复制或替换 `history.db`。
 
 ## 项目结构
 

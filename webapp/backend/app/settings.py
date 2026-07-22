@@ -3,8 +3,11 @@
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_HISTORY_DB = PROJECT_ROOT / "data" / "history.db"
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -54,6 +57,16 @@ def parse_inference_concurrency(value: str | None) -> int:
     return concurrency
 
 
+def parse_history_db_path(value: str | None) -> Path:
+    """Resolve an optional history DB path without tying storage to model imports."""
+    if value is None or not value.strip():
+        return DEFAULT_HISTORY_DB
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
+
 def parse_api_key(value: str | None) -> str | None:
     """Return an optional secret, rejecting keys too short for network use."""
     if value is None or value == "":
@@ -69,6 +82,7 @@ def parse_api_key(value: str | None) -> str | None:
 class Settings:
     cors_origins: tuple[str, ...]
     inference_concurrency: int
+    history_db_path: Path
     api_key: str | None = field(repr=False)
 
     @classmethod
@@ -78,6 +92,9 @@ class Settings:
             cors_origins=parse_cors_origins(source.get("MALGUARD_CORS_ORIGINS")),
             inference_concurrency=parse_inference_concurrency(
                 source.get("MALGUARD_INFERENCE_CONCURRENCY")
+            ),
+            history_db_path=parse_history_db_path(
+                source.get("MALGUARD_HISTORY_DB")
             ),
             api_key=parse_api_key(source.get("MALGUARD_API_KEY")),
         )

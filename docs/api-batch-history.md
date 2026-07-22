@@ -85,11 +85,13 @@ const res = await fetch("/api/detect/batch", { method: "POST", body: form });
 
 ## 3. 检测历史（新增，后端 SQLite 持久化）
 
-历史存于后端 `data/history.db`，重启、换浏览器都在。**注意：现有前端 `HistoryEntry.id` 是 `string`，后端返回的是 `number`——请把类型改成 `number`。** 后端历史记录字段比现有 `HistoryEntry` 多，前端按需取用即可。
+历史默认存于后端 `data/history.db`，可通过 `MALGUARD_HISTORY_DB` 指向其他绝对路径或仓库根目录下的相对路径。重启、换浏览器后记录仍然存在。**注意：现有前端 `HistoryEntry.id` 是 `string`，后端返回的是 `number`——请把类型改成 `number`。** 后端历史记录字段比现有 `HistoryEntry` 多，前端按需取用即可。
 
 `GET /api/history?limit=50&offset=0` → `HistoryRecord[]`（按时间倒序，`limit` 1–500，默认 50）
 
 `GET /api/history/{id}` → 单条 `HistoryRecord`，不存在返回 404
+
+`GET /api/history/backup` → 事务一致的独立 SQLite 快照（`application/vnd.sqlite3`、附件下载）。服务端在响应完成后删除临时快照；接口不会暂停检测写入。启用 API Key 时必须携带 `X-API-Key`。
 
 ```ts
 interface HistoryRecord {
@@ -116,7 +118,7 @@ interface HistoryRecord {
 
 `GET /api/history/{id}/report` → 自包含 HTML（`Content-Type: text/html`，无外部依赖）。
 
-直接在新标签页打开即可查看，浏览器「打印 → 另存为 PDF」即得 PDF 报告。前端只需给一个链接/按钮指向该 URL，无需自己渲染。
+未启用 API Key 时可直接在新标签页打开，浏览器「打印 → 另存为 PDF」即得 PDF 报告。启用鉴权后普通链接无法附加请求头，前端必须用带密钥的 `fetch` 获取 HTML 并通过临时 Blob URL 打开。
 
 ## 5. 删除历史（新增）
 

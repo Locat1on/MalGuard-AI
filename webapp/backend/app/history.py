@@ -1,7 +1,8 @@
 """SQLite persistence for detection history + self-contained HTML report rendering.
 
-This is runtime state, not a model checkpoint, so it lives under data/ (already gitignored)
-rather than checkpoints/. Only real detections are recorded — the router guards recording on
+This is runtime state, not a model checkpoint, so it defaults to data/ (already gitignored)
+rather than checkpoints/; MALGUARD_HISTORY_DB may place it on persistent storage.
+Only real detections are recorded — the router guards recording on
 `predictor.models_loaded`, so the hash-based stub never pollutes the history.
 
 Uses stdlib sqlite3 (no new dependency) with a fresh connection per call: detection runs off
@@ -16,10 +17,10 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from app.predictor import PROJECT_ROOT
 from app.schemas import DetectionResult
+from app.settings import settings
 
-DB_PATH = PROJECT_ROOT / "data" / "history.db"
+DB_PATH = settings.history_db_path
 
 
 def _connect() -> sqlite3.Connection:
@@ -61,6 +62,28 @@ def init_db() -> None:
         columns = {r["name"] for r in conn.execute("PRAGMA table_info(detections)")}
         if "family_confidence" not in columns:
             conn.execute("ALTER TABLE detections ADD COLUMN family_confidence REAL")
+
+
+def backup_to(destination: Path) -> None:
+    """Create a transaction-consistent standalone SQLite snapshot."""
+    destination = destination.resolve()
+    if destination == DB_PATH.resolve():
+        raise ValueError("备份目标不能覆盖正在使用的历史数据库。")
+    if destination.exists():
+        raise FileExistsError(f"备份目标已存在：{destination}")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with closing(_connect()) as source, closing(
+            sqlite3.connect(destination, timeout=10)
+        ) as target:
+            source.backup(target)
+            check = target.execute("PRAGMA quick_check").fetchone()[0]
+            if check != "ok":
+                raise RuntimeError(f"SQLite 备份完整性检查失败：{check}")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 _INSERT_SQL = """

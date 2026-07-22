@@ -1,8 +1,10 @@
 import hashlib
 import json
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import sys
 import tempfile
 import unittest
@@ -32,9 +34,12 @@ from app.predictor import (
 from app.schemas import AttckTag, DetectionResult
 from app.settings import (
     DEFAULT_CORS_ORIGINS,
+    DEFAULT_HISTORY_DB,
+    PROJECT_ROOT,
     Settings,
     parse_api_key,
     parse_cors_origins,
+    parse_history_db_path,
     parse_inference_concurrency,
 )
 from app.upload_limits import MAX_BATCH_REQUEST_BYTES, MAX_SINGLE_REQUEST_BYTES
@@ -64,6 +69,7 @@ class RuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.cors_origins, DEFAULT_CORS_ORIGINS)
         self.assertEqual(settings.inference_concurrency, 1)
         self.assertIsNone(settings.api_key)
+        self.assertEqual(settings.history_db_path, DEFAULT_HISTORY_DB)
         self.assertEqual(
             parse_cors_origins(
                 "http://192.168.56.1:5173/, https://demo.example, "
@@ -89,6 +95,10 @@ class RuntimeSettingsTests(unittest.TestCase):
         secure_settings = Settings.from_environ({"MALGUARD_API_KEY": "a" * 16})
         self.assertEqual(secure_settings.api_key, "a" * 16)
         self.assertNotIn("a" * 16, repr(secure_settings))
+        self.assertEqual(
+            parse_history_db_path("data/custom-history.db"),
+            (PROJECT_ROOT / "data" / "custom-history.db").resolve(),
+        )
 
     def test_declared_oversized_uploads_are_rejected_before_route_parsing(self) -> None:
         client = TestClient(app)
@@ -536,6 +546,34 @@ class HistoryReliabilityTests(unittest.TestCase):
                 self.assertEqual(stats["modelDisagreements"], 2)
                 self.assertEqual(stats["llmCompared"], 2)
                 self.assertEqual(stats["llmDisagreements"], 1)
+
+                client = TestClient(app)
+                backup_response = client.get("/api/history/backup")
+                self.assertEqual(backup_response.status_code, 200)
+                self.assertIn(
+                    "attachment;",
+                    backup_response.headers["content-disposition"],
+                )
+                self.assertTrue(backup_response.content.startswith(b"SQLite format 3\x00"))
+                downloaded = Path(directory) / "downloaded.db"
+                downloaded.write_bytes(backup_response.content)
+                with closing(sqlite3.connect(downloaded)) as backup_conn:
+                    self.assertEqual(
+                        backup_conn.execute("SELECT COUNT(*) FROM detections").fetchone()[0],
+                        2,
+                    )
+                    self.assertEqual(
+                        backup_conn.execute("PRAGMA quick_check").fetchone()[0],
+                        "ok",
+                    )
+                self.assertEqual(
+                    list(Path(directory).glob(".history-backup-*.db")),
+                    [],
+                )
+                with self.assertRaises(ValueError):
+                    history.backup_to(db_path)
+                with self.assertRaises(FileExistsError):
+                    history.backup_to(downloaded)
 
                 report = history.render_report_html(history.get(first_id))
                 self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", report)
