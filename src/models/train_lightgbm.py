@@ -21,6 +21,17 @@ CHECKPOINT_PATH = CHECKPOINT_DIR / "lightgbm.txt"
 MANIFEST_PATH = CHECKPOINT_DIR / "lightgbm_training_manifest.json"
 
 
+def _atomic_save_model(model, path: Path) -> None:
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    try:
+        model.save_model(str(temp_path))
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise RuntimeError("LightGBM checkpoint writer produced an empty file")
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
 def train() -> None:
     source_git = git_manifest()
     params = load_config("lightgbm")
@@ -40,7 +51,7 @@ def train() -> None:
         print(f"  {name + ':':10} {value:.4f}")
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-    model.save_model(str(CHECKPOINT_PATH))
+    _atomic_save_model(model, CHECKPOINT_PATH)
     manifest = {
         "model": "LightGBM EMBER static-feature baseline",
         "config": params,

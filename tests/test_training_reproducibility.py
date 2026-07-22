@@ -19,6 +19,7 @@ from src.models.train_family import (
     make_indexed_loader,
     select_family_indices,
 )
+from src.models.train_lightgbm import _atomic_save_model
 from src.models.train_mlp import (
     _atomic_save_pickle,
     _atomic_save_state_dict,
@@ -130,6 +131,41 @@ class MemorySafeTrainingTests(unittest.TestCase):
         self.assertEqual(metrics["precision"], 0.5)
         self.assertEqual(metrics["recall"], 0.5)
         self.assertEqual(metrics["f1"], 0.5)
+
+    def test_lightgbm_atomic_save_preserves_deployed_model_on_failure(self) -> None:
+        class FailingBooster:
+            @staticmethod
+            def save_model(path: str) -> None:
+                Path(path).write_text("partial", encoding="utf-8")
+                raise RuntimeError("simulated write failure")
+
+        class EmptyBooster:
+            @staticmethod
+            def save_model(path: str) -> None:
+                Path(path).write_bytes(b"")
+
+        class WorkingBooster:
+            @staticmethod
+            def save_model(path: str) -> None:
+                Path(path).write_text("complete-model", encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            deployed = Path(directory) / "lightgbm.txt"
+            deployed.write_text("current-model", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated write failure"):
+                _atomic_save_model(FailingBooster(), deployed)
+            self.assertEqual(deployed.read_text(encoding="utf-8"), "current-model")
+            self.assertFalse((Path(directory) / "lightgbm.txt.tmp").exists())
+
+            with self.assertRaisesRegex(RuntimeError, "empty file"):
+                _atomic_save_model(EmptyBooster(), deployed)
+            self.assertEqual(deployed.read_text(encoding="utf-8"), "current-model")
+            self.assertFalse((Path(directory) / "lightgbm.txt.tmp").exists())
+
+            _atomic_save_model(WorkingBooster(), deployed)
+            self.assertEqual(deployed.read_text(encoding="utf-8"), "complete-model")
+            self.assertFalse((Path(directory) / "lightgbm.txt.tmp").exists())
 
     def test_mlp_artifacts_are_staged_before_publish(self) -> None:
         model = torch.nn.Linear(3, 1)
