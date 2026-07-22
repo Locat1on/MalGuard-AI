@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-CONFIGS_DIR = Path(r"D:\study\Integrated_Design\configs")
+CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 
 
 def load_config(name: str) -> dict:

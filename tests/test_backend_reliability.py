@@ -69,6 +69,8 @@ class PredictorReliabilityTests(unittest.TestCase):
         client = TestClient(app)
         health_response = client.get("/api/health")
         self.assertEqual(health_response.status_code, 200)
+        self.assertRegex(health_response.headers["X-Request-ID"], r"^[0-9a-f]{32}$")
+        self.assertGreaterEqual(float(health_response.headers["X-Process-Time-Ms"]), 0)
         body = health_response.json()
         self.assertIn(body["mode"], ("real", "stub", "unavailable"))
         self.assertEqual(body["ready"], body["modelsLoaded"])
@@ -79,6 +81,23 @@ class PredictorReliabilityTests(unittest.TestCase):
         stats_response = client.get("/api/history/stats")
         self.assertEqual(stats_response.status_code, 200)
         self.assertIn("modelDisagreements", stats_response.json())
+
+    def test_metrics_provenance_endpoint(self) -> None:
+        client = TestClient(app)
+        metrics_module = sys.modules["app.routers.metrics"]
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = Path(directory) / "evaluation_manifest.json"
+            with patch.object(metrics_module, "MANIFEST_FILE", manifest_path):
+                missing = client.get("/api/metrics/provenance")
+                self.assertEqual(missing.status_code, 404)
+
+                manifest_path.write_text(
+                    '{"protocol":{"test_rows":240000},"artifacts":[]}',
+                    encoding="utf-8",
+                )
+                response = client.get("/api/metrics/provenance")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["protocol"]["test_rows"], 240000)
 
 
 class HistoryReliabilityTests(unittest.TestCase):

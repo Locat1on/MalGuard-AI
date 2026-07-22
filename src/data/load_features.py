@@ -1,7 +1,8 @@
 """Load vectorized EMBER2024 features and produce a fixed, reusable train/val/test split.
 
-Both the LightGBM baseline and the MLP model must import `load_split()` rather than each
-carving their own split, so their reported metrics are comparable on identical data.
+The split helpers share one index-building function, so LightGBM, MLP and family training use
+identical train/validation boundaries. Callers can load train/validation or test independently
+to avoid materializing data they do not need.
 
 Memory note: X_train.dat is ~10.7 GB (1.04M rows x 2568 float32). thrember's
 `read_vectorized_features` opens it as a memmap but then does `np.array(X)`, which forces the
@@ -16,13 +17,17 @@ alignment that `train_family.py` depends on are unaffected.
 
 import gc
 import json
+import os
 from pathlib import Path
 
 import numpy as np
 import thrember
 from sklearn.model_selection import train_test_split
 
-DATA_DIR = r"D:\study\Integrated_Design\data\raw\ember2024"
+DATA_DIR = os.environ.get(
+    "EMBER2024_DATA_DIR",
+    str(Path(__file__).resolve().parents[2] / "data" / "raw" / "ember2024"),
+)
 VAL_SIZE = 0.1
 RANDOM_STATE = 42
 
@@ -68,38 +73,45 @@ def _labeled_train_val_indices(
     return train_idx, val_idx
 
 
+def load_train_val(
+    data_dir: str = DATA_DIR,
+    val_size: float = VAL_SIZE,
+    random_state: int = RANDOM_STATE,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Materialize only the fixed labeled train/validation partition."""
+    features, targets = _read_memmap(data_dir, "train")
+    train_idx, val_idx = _labeled_train_val_indices(targets, val_size, random_state)
+    X_train, X_val = features[train_idx], features[val_idx]
+    y_train, y_val = targets[train_idx], targets[val_idx]
+    del features
+    gc.collect()
+    return X_train, y_train, X_val, y_val
+
+
+def load_test(data_dir: str = DATA_DIR) -> tuple[np.ndarray, np.ndarray]:
+    """Materialize only labeled rows from the official test split."""
+    features, targets = _read_memmap(data_dir, "test")
+    indices = np.flatnonzero(targets != -1)
+    X_test, y_test = features[indices], targets[indices]
+    del features
+    gc.collect()
+    return X_test, y_test
+
+
 def load_split(
     data_dir: str = DATA_DIR,
     val_size: float = VAL_SIZE,
     random_state: int = RANDOM_STATE,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (X_train, y_train, X_val, y_val, X_test, y_test).
-
-    `y == -1` (unlabeled) rows are dropped from both train and test before splitting.
-    The train/val split is stratified and uses a fixed random_state so repeated calls
-    (from different training scripts) get the identical split.
-    """
-    X_train_mm, y_train_full = _read_memmap(data_dir, "train")
-    train_idx, val_idx = _labeled_train_val_indices(y_train_full, val_size, random_state)
-    X_train = X_train_mm[train_idx]  # fancy-indexing a memmap materializes just these rows
-    X_val = X_train_mm[val_idx]
-    y_train, y_val = y_train_full[train_idx], y_train_full[val_idx]
-    del X_train_mm
-    gc.collect()
-
-    X_test_mm, y_test_full = _read_memmap(data_dir, "test")
-    test_idx = np.flatnonzero(y_test_full != -1)
-    X_test, y_test = X_test_mm[test_idx], y_test_full[test_idx]
-    del X_test_mm
-    gc.collect()
-
+    """Return the fixed train/validation partition and official labeled test split."""
+    X_train, y_train, X_val, y_val = load_train_val(data_dir, val_size, random_state)
+    X_test, y_test = load_test(data_dir)
     return X_train, y_train, X_val, y_val, X_test, y_test
 
 
 def _load_family_labels(data_dir: str, subset: str) -> np.ndarray:
-    with open(Path(data_dir) / f"family_{subset}.json", encoding="utf-8") as f:
-        return np.array(json.load(f), dtype=object)
-
+    with open(Path(data_dir) / f"family_{subset}.json", encoding="utf-8") as file:
+        return np.array(json.load(file), dtype=object)
 
 def load_family_split(
     data_dir: str = DATA_DIR,

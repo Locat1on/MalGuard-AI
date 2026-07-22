@@ -20,7 +20,7 @@ from pathlib import Path
 import lief
 
 SOURCE = Path(r"C:\Windows\System32\attrib.exe")
-OUTPUT = Path(r"D:\study\Integrated_Design\demo_samples\suspicious_demo.exe")
+OUTPUT = Path(__file__).resolve().parent / "suspicious_demo.exe"
 
 EXTRA_IMPORTS: dict[str, list[str]] = {
     "advapi32.dll": [

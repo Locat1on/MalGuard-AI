@@ -35,8 +35,9 @@ from src.data.load_features import (
 from src.features.extract import FEATURE_DIM
 from src.models.mlp import MalwareMLP
 
-CHECKPOINT_DIR = Path(r"D:\study\Integrated_Design\checkpoints\ablation")
-SCALER_PATH = Path(r"D:\study\Integrated_Design\checkpoints\scaler.pkl")
+CHECKPOINTS_DIR = Path(__file__).resolve().parents[2] / "checkpoints"
+CHECKPOINT_DIR = CHECKPOINTS_DIR / "ablation"
+SCALER_PATH = CHECKPOINTS_DIR / "scaler.pkl"
 SEED = 42
 
 

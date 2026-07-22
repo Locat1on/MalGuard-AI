@@ -155,3 +155,23 @@ interface HistoryStats {
 ```
 
 这些数据来自 SQLite 聚合，可用于历史页顶部的紧凑统计区。`llmDisagreements / llmCompared` 才是有意义的 LLM 分歧率，批量检测未运行 LLM，不应进入分母。
+## 8. 指标来源与请求追踪（新增）
+
+`GET /api/metrics` 现返回三行正式评估结果：LightGBM、MLP、实际部署使用的二者算术平均集成。
+
+`GET /api/metrics/provenance` 返回 `checkpoints/evaluation_manifest.json`，包含：
+- 官方测试集名称、样本数、类别数、阈值、集成规则和推理批大小；
+- 每个模型的指标与混淆矩阵；
+- 模型及 scaler 的 SHA-256、文件大小；
+- Python/核心依赖/CUDA 环境和评估开始时的 Git 状态。
+
+清单尚未生成时接口返回 404。前端可把该接口用于“指标来源”抽屉，不应把运行环境和哈希塞进主指标表。
+
+所有 API 响应还会带两个响应头：
+
+```text
+X-Request-ID: 32 位十六进制请求标识
+X-Process-Time-Ms: 后端处理耗时（毫秒）
+```
+
+错误提示可附带 `X-Request-ID` 方便定位日志，但不应向用户展示后端堆栈或上传内容。

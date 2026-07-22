@@ -14,6 +14,7 @@ Run: .venv\\Scripts\\python.exe src/data/vectorize_low_concurrency.py
 """
 
 import multiprocessing
+import os
 import sys
 from pathlib import Path
 
@@ -24,7 +25,12 @@ import tqdm
 from thrember.features import PEFeatureExtractor
 from thrember.model import gather_feature_paths, raw_feature_iterator, vectorize_unpack
 
-DATA_DIR = Path(r"D:\study\Integrated_Design\data\raw\ember2024")
+DATA_DIR = Path(
+    os.environ.get(
+        "EMBER2024_DATA_DIR",
+        Path(__file__).resolve().parents[2] / "data" / "raw" / "ember2024",
+    )
+)
 NUM_WORKERS = 4
 
 

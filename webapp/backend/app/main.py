@@ -1,6 +1,9 @@
+import logging
 import os
+import time
+import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -11,6 +14,8 @@ from app.routers import detect, metrics
 from app.routers import history as history_router
 
 history.init_db()
+
+REQUEST_LOGGER = logging.getLogger("malguard.requests")
 
 app = FastAPI(title="MalGuard AI backend")
 
@@ -24,6 +29,37 @@ app.add_middleware(
 app.include_router(detect.router, prefix="/api")
 app.include_router(metrics.router, prefix="/api")
 app.include_router(history_router.router, prefix="/api")
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    """Attach a request id and server duration without logging uploaded filenames/content."""
+    request_id = uuid.uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000
+        REQUEST_LOGGER.exception(
+            "request_id=%s method=%s path=%s status=500 duration_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+    duration_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.1f}"
+    REQUEST_LOGGER.info(
+        "request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 
 
 def _health_status() -> HealthStatus:

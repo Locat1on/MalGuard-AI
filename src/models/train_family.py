@@ -65,7 +65,7 @@ from src.config import load_config
 from src.data.load_features import load_family_split
 from src.models.mlp import MalwareMLP
 
-CHECKPOINT_DIR = Path(r"D:\study\Integrated_Design\checkpoints")
+CHECKPOINT_DIR = Path(__file__).resolve().parents[2] / "checkpoints"
 SCALER_PATH = CHECKPOINT_DIR / "scaler.pkl"
 MODEL_PATH = CHECKPOINT_DIR / "family_mlp.pt"
 LABELS_PATH = CHECKPOINT_DIR / "family_labels.json"

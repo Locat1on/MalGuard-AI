@@ -1,3 +1,4 @@
+seed: 42
 objective: binary
 metric: binary_logloss
 boosting_type: gbdt

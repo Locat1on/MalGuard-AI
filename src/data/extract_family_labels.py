@@ -9,6 +9,7 @@ Run: .venv\\Scripts\\python.exe src/data/extract_family_labels.py
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from thrember.model import gather_feature_paths, raw_feature_iterator
 
-DATA_DIR = Path(r"D:\study\Integrated_Design\data\raw\ember2024")
+DATA_DIR = Path(
+    os.environ.get(
+        "EMBER2024_DATA_DIR",
+        Path(__file__).resolve().parents[2] / "data" / "raw" / "ember2024",
+    )
+)
 
 
 def extract_families(subset: str) -> list[str | None]:

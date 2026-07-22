@@ -29,7 +29,7 @@ import requests
 from src.config import load_config
 from src.llm.feature_summary import StructuralSummary
 
-CACHE_DIR = Path(r"D:\study\Integrated_Design\checkpoints\llm_cache")
+CACHE_DIR = Path(__file__).resolve().parents[2] / "checkpoints" / "llm_cache"
 ANALYSIS_VERSION = 2
 
 SYSTEM_PROMPT = (

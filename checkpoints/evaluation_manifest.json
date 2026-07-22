@@ -1,0 +1,99 @@
+{
+  "protocol": {
+    "dataset": "EMBER2024 Win64 official labeled test split",
+    "feature_dimensions": 2568,
+    "threshold": 0.5,
+    "ensemble": "arithmetic mean of LightGBM and MLP malicious probabilities",
+    "inference_batch_size": 8192,
+    "test_rows": 240000,
+    "test_malicious": 120000,
+    "test_benign": 120000
+  },
+  "results": [
+    {
+      "model": "LightGBM (EMBER 静态特征基线)",
+      "accuracy": 0.9723333333333334,
+      "precision": 0.9732324750359016,
+      "recall": 0.9713833333333334,
+      "f1": 0.9723070250070901,
+      "confusion_matrix": [
+        [
+          116794,
+          3206
+        ],
+        [
+          3434,
+          116566
+        ]
+      ]
+    },
+    {
+      "model": "MLP 深度模型 (本系统)",
+      "accuracy": 0.98345,
+      "precision": 0.9859445151779133,
+      "recall": 0.9808833333333333,
+      "f1": 0.9834074123583866,
+      "confusion_matrix": [
+        [
+          118322,
+          1678
+        ],
+        [
+          2294,
+          117706
+        ]
+      ]
+    },
+    {
+      "model": "LightGBM + MLP 集成 (部署模型)",
+      "accuracy": 0.9837916666666666,
+      "precision": 0.9863775741023106,
+      "recall": 0.9811333333333333,
+      "f1": 0.9837484646685773,
+      "confusion_matrix": [
+        [
+          118374,
+          1626
+        ],
+        [
+          2264,
+          117736
+        ]
+      ]
+    }
+  ],
+  "artifacts": {
+    "lightgbm.txt": {
+      "sha256": "8eb4ff8e132d11efb6f31601d6e6201611a50fc51ae5239530599e4346e8afd6",
+      "size_bytes": 795949
+    },
+    "mlp.pt": {
+      "sha256": "a85798dad5f4c10455022b50386bfdc760ab13809983bc895ca5d8982326c970",
+      "size_bytes": 4039113
+    },
+    "scaler.pkl": {
+      "sha256": "15b5462c6abfe3e1c91085324ed472b596719bdd29267224720009b9c4a32d39",
+      "size_bytes": 62061
+    }
+  },
+  "runtime": {
+    "generated_at_utc": "2026-07-22T13:08:06+00:00",
+    "python": "3.11.4",
+    "platform": "Windows-10-10.0.26100-SP0",
+    "packages": {
+      "numpy": "2.4.6",
+      "scikit-learn": "1.9.0",
+      "lightgbm": "4.6.0",
+      "torch": "2.6.0+cu124",
+      "thrember": "0.1.0",
+      "lief": "0.17.6"
+    },
+    "cuda_available": true,
+    "cuda_device": "NVIDIA GeForce RTX 4070 Laptop GPU"
+  },
+  "git": {
+    "commit": "23365fe1913b56fdc2997a133f50002e11e8102e",
+    "branch": "codex/backend-reliability-llm-analysis",
+    "dirty": true
+  }
+}
