@@ -1,4 +1,4 @@
-"""Runtime patch for a bug in thrember's Authenticode signature feature extractor.
+"""Runtime correctness and performance patches for thrember feature extraction.
 
 thrember.features.AuthenticodeSignature.raw_features() does `for cert in certs[:-1]:` where
 `certs` is a signify `CertificateStore`. In signify==0.8.1 (pinned for a separate import-time
@@ -12,14 +12,19 @@ which made the live-upload path fail on the majority of legitimately-signed real
 Patched by wrapping certs in list() before slicing, and adding TypeError to the same
 parse-error fallback the original method already uses for other malformed-signature cases
 (rather than letting it propagate as an unhandled exception).
+
+The string extractor also calls ``re.search`` for every already-compiled pattern. Calling the
+compiled pattern directly preserves counts while avoiding redundant regex dispatch.
 """
 
 import io
+from collections import OrderedDict
 
 import lief
+import numpy as np
 import signify.exceptions
 from signify.authenticode import SignedPEFile
-from thrember.features import AuthenticodeSignature
+from thrember.features import AuthenticodeSignature, StringExtractor
 
 # Quiet LIEF's console logging. On packed/minimal/crafted PEs (e.g. a tiny msfvenom payload)
 # LIEF prints warnings like "Unable to find the section associated with IMPORT_TABLE" to stderr;
@@ -83,4 +88,42 @@ def _patched_raw_features(self, bytez, pe):
     return raw_obj
 
 
+def _optimized_string_raw_features(self, bytez, pe):
+    """Preserve thrember string features while avoiding redundant regex dispatch."""
+    allstrings = self._allstrings.findall(bytez)
+    allstrings_ascii = [value.decode() for value in allstrings]
+    if allstrings:
+        string_lengths = [len(value) for value in allstrings]
+        average_length = sum(string_lengths) / len(string_lengths)
+        shifted = [value - ord(b"\x20") for value in b"".join(allstrings)]
+        counts = np.bincount(shifted, minlength=96)
+        printable_count = counts.sum()
+        probabilities = counts.astype(np.float32) / printable_count
+        populated = np.where(counts)[0]
+        entropy = np.sum(
+            -probabilities[populated] * np.log2(probabilities[populated])
+        )
+    else:
+        average_length = 0
+        counts = np.zeros((96,), dtype=np.float32)
+        entropy = 0
+        printable_count = 0
+
+    string_counts = {}
+    for value in allstrings_ascii:
+        for name, pattern in self._regexes.items():
+            if pattern.search(value):
+                string_counts[name] = string_counts.get(name, 0) + 1
+
+    return {
+        "numstrings": len(allstrings),
+        "avlength": average_length,
+        "printabledist": counts.tolist(),
+        "printables": int(printable_count),
+        "entropy": float(entropy),
+        "string_counts": OrderedDict(sorted(string_counts.items())),
+    }
+
+
+StringExtractor.raw_features = _optimized_string_raw_features
 AuthenticodeSignature.raw_features = _patched_raw_features

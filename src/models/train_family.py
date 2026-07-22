@@ -41,6 +41,7 @@ from src.data.load_features import (
     _read_memmap,
 )
 from src.models.mlp import MalwareMLP
+from src.models.training_utils import TorchStandardizer
 from src.reproducibility import (
     artifact_manifest,
     git_manifest,
@@ -157,7 +158,6 @@ def select_family_indices(
 
 def make_indexed_loader(
     dataset: IndexedFamilyDataset,
-    scaler,
     batch_size: int,
     shuffle: bool,
     seed: int,
@@ -165,9 +165,10 @@ def make_indexed_loader(
 ) -> DataLoader:
     def collate(batch: list[tuple[int, int]]) -> tuple[torch.Tensor, torch.Tensor]:
         indices, targets = zip(*batch)
-        values = scaler.transform(
-            dataset.features[np.asarray(indices, dtype=np.int64)]
-        ).astype(np.float32, copy=False)
+        values = np.asarray(
+            dataset.features[np.asarray(indices, dtype=np.int64)],
+            dtype=np.float32,
+        )
         return torch.from_numpy(values), torch.tensor(targets, dtype=torch.long)
 
     return DataLoader(
@@ -199,6 +200,7 @@ def predict_labels(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
+    standardizer: TorchStandardizer,
     use_amp: bool,
     top_k: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, float]:
@@ -208,7 +210,7 @@ def predict_labels(
     top_k_hits = 0
     sample_count = 0
     for X_batch, y_batch in loader:
-        X_batch = X_batch.to(device, non_blocking=True)
+        X_batch = standardizer(X_batch.to(device, non_blocking=True))
         targets_device = y_batch.to(device, non_blocking=True)
         with torch.amp.autocast("cuda", enabled=use_amp):
             logits = model(X_batch)
@@ -297,6 +299,7 @@ def train() -> None:
         )
     with SCALER_PATH.open("rb") as file:
         scaler = pickle.load(file)
+    standardizer = TorchStandardizer(scaler, device)
 
     features, targets = _read_memmap(DATA_DIR, "train")
     families = _load_family_labels(DATA_DIR, "train")
@@ -327,7 +330,6 @@ def train() -> None:
     val_set = IndexedFamilyDataset(features, val_indices, y_val)
     train_loader = make_indexed_loader(
         train_set,
-        scaler,
         config["batch_size"],
         True,
         seed,
@@ -335,7 +337,6 @@ def train() -> None:
     )
     val_loader = make_indexed_loader(
         val_set,
-        scaler,
         config["batch_size"],
         False,
         seed,
@@ -360,7 +361,7 @@ def train() -> None:
         model.train()
         total_loss = 0.0
         for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(device, non_blocking=True)
+            X_batch = standardizer(X_batch.to(device, non_blocking=True))
             y_batch = y_batch.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -371,7 +372,7 @@ def train() -> None:
             total_loss += loss.item() * X_batch.size(0)
 
         y_val_pred, y_val_eval, _ = predict_labels(
-            model, val_loader, device, use_amp=False
+            model, val_loader, device, standardizer, use_amp=False
         )
         val_f1 = float(
             f1_score(
@@ -420,14 +421,13 @@ def train() -> None:
     test_set = IndexedFamilyDataset(test_features, test_indices, y_test)
     test_loader = make_indexed_loader(
         test_set,
-        scaler,
         config["batch_size"],
         False,
         seed,
         device.type == "cuda",
     )
     y_pred, y_test_eval, top3 = predict_labels(
-        model, test_loader, device, use_amp=False, top_k=3
+        model, test_loader, device, standardizer, use_amp=False, top_k=3
     )
     class_indices = list(range(num_classes))
     top1 = float(accuracy_score(y_test_eval, y_pred))

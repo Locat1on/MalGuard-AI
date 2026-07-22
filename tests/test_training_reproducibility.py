@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import torch
 from sklearn.preprocessing import StandardScaler
 
 from src.data import load_features
@@ -16,6 +17,7 @@ from src.models.train_family import (
     select_family_indices,
 )
 from src.models.train_mlp import fit_scaler_incrementally
+from src.models.training_utils import TorchStandardizer
 from src.reproducibility import artifact_manifest, write_json_atomic
 
 
@@ -33,6 +35,20 @@ class MemorySafeTrainingTests(unittest.TestCase):
             expected.transform(features[indices]),
             rtol=1e-6,
             atol=1e-6,
+        )
+
+    def test_torch_standardizer_matches_sklearn_transform(self) -> None:
+        rng = np.random.default_rng(7)
+        features = rng.normal(size=(31, 9)).astype(np.float32)
+        scaler = StandardScaler().fit(features[:23])
+        standardizer = TorchStandardizer(scaler, torch.device("cpu"))
+
+        actual = standardizer(torch.from_numpy(features.copy())).numpy()
+        np.testing.assert_allclose(
+            actual,
+            scaler.transform(features),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
     def test_train_val_loader_does_not_require_test_files(self) -> None:
@@ -66,11 +82,9 @@ class MemorySafeTrainingTests(unittest.TestCase):
         np.testing.assert_array_equal(indices, [0, 3, 4])
         np.testing.assert_array_equal(labels, [0, 1, 2])
 
-        scaler = StandardScaler().fit(features)
         dataset = IndexedFamilyDataset(features, indices, labels)
         loader = make_indexed_loader(
             dataset,
-            scaler,
             batch_size=2,
             shuffle=False,
             seed=42,
@@ -81,7 +95,7 @@ class MemorySafeTrainingTests(unittest.TestCase):
         actual_labels = np.concatenate([batch[1].numpy() for batch in batches])
         np.testing.assert_allclose(
             actual_features,
-            scaler.transform(features[indices]).astype(np.float32),
+            features[indices],
             rtol=1e-6,
             atol=1e-6,
         )
@@ -99,6 +113,7 @@ class MemorySafeTrainingTests(unittest.TestCase):
         np.testing.assert_array_equal(collapsed_true, [0, 0, 0, 1, 1, 2, 2])
         np.testing.assert_array_equal(collapsed_pred, [0, 1, 2, 1, 2, 2, 0])
         self.assertEqual(display_labels, ["a", "b", "其余已建模家族"])
+
     def test_metrics_use_probability_threshold(self) -> None:
         metrics = compute_metrics(
             np.array([0, 0, 1, 1]),

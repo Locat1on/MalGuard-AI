@@ -13,4 +13,4 @@ matplotlib
 pyyaml
 lief
 signify==0.8.1
-git+https://github.com/FutureComputing4AI/EMBER2024.git#egg=thrember
+git+https://github.com/FutureComputing4AI/EMBER2024.git@0ef753e81d98bf209f71b03cd331dfc190b5b54d#egg=thrember

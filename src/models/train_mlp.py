@@ -22,9 +22,23 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from src.config import load_config
-from src.data.load_features import DATA_DIR, RANDOM_STATE, VAL_SIZE, _labeled_train_val_indices, _read_memmap
+from src.data.load_features import (
+    DATA_DIR,
+    RANDOM_STATE,
+    VAL_SIZE,
+    _labeled_train_val_indices,
+    _read_memmap,
+)
 from src.models.mlp import MalwareMLP
-from src.reproducibility import PROJECT_ROOT, artifact_manifest, git_manifest, runtime_manifest, set_global_seed, write_json_atomic
+from src.models.training_utils import TorchStandardizer
+from src.reproducibility import (
+    PROJECT_ROOT,
+    artifact_manifest,
+    git_manifest,
+    runtime_manifest,
+    set_global_seed,
+    write_json_atomic,
+)
 
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 MODEL_PATH = CHECKPOINT_DIR / "mlp.pt"
@@ -60,7 +74,6 @@ def fit_scaler_incrementally(
 
 def make_loader(
     dataset: IndexedMemmapDataset,
-    scaler: StandardScaler,
     batch_size: int,
     shuffle: bool,
     seed: int,
@@ -68,7 +81,10 @@ def make_loader(
 ) -> DataLoader:
     def collate(batch: list[tuple[int, float]]) -> tuple[torch.Tensor, torch.Tensor]:
         indices, targets = zip(*batch)
-        values = scaler.transform(dataset.features[np.asarray(indices)]).astype(np.float32, copy=False)
+        values = np.asarray(
+            dataset.features[np.asarray(indices, dtype=np.int64)],
+            dtype=np.float32,
+        )
         return torch.from_numpy(values), torch.tensor(targets, dtype=torch.float32)
 
     return DataLoader(
@@ -83,13 +99,18 @@ def make_loader(
 
 @torch.no_grad()
 def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device, use_amp: bool
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    standardizer: TorchStandardizer,
+    use_amp: bool,
 ) -> dict[str, float]:
     model.eval()
     all_preds, all_targets = [], []
     for X_batch, y_batch in loader:
+        X_batch = standardizer(X_batch.to(device, non_blocking=True))
         with torch.amp.autocast("cuda", enabled=use_amp):
-            logits = model(X_batch.to(device, non_blocking=True))
+            logits = model(X_batch)
         all_preds.append((torch.sigmoid(logits) >= 0.5).long().cpu())
         all_targets.append(y_batch.long())
     y_pred = torch.cat(all_preds).numpy()
@@ -120,14 +141,21 @@ def train() -> None:
     print(f"data ready: train={len(train_indices)}, val={len(val_indices)}")
     print("fitting StandardScaler incrementally...")
     scaler = fit_scaler_incrementally(features, train_indices)
+    standardizer = TorchStandardizer(scaler, device)
 
     train_set = IndexedMemmapDataset(features, targets, train_indices)
     val_set = IndexedMemmapDataset(features, targets, val_indices)
-    train_loader = make_loader(train_set, scaler, config["batch_size"], True, seed, device.type == "cuda")
-    val_loader = make_loader(val_set, scaler, config["batch_size"], False, seed, device.type == "cuda")
+    train_loader = make_loader(
+        train_set, config["batch_size"], True, seed, device.type == "cuda"
+    )
+    val_loader = make_loader(
+        val_set, config["batch_size"], False, seed, device.type == "cuda"
+    )
 
     model = MalwareMLP(
-        hidden_dims=config["hidden_dims"], dropout=config["dropout"], embed_dim=config["embed_dim"]
+        hidden_dims=config["hidden_dims"],
+        dropout=config["dropout"],
+        embed_dim=config["embed_dim"],
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"])
     criterion = nn.BCEWithLogitsLoss()
@@ -141,7 +169,7 @@ def train() -> None:
         model.train()
         total_loss = 0.0
         for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(device, non_blocking=True)
+            X_batch = standardizer(X_batch.to(device, non_blocking=True))
             y_batch = y_batch.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp):
@@ -151,7 +179,7 @@ def train() -> None:
             grad_scaler.update()
             total_loss += loss.item() * X_batch.size(0)
 
-        val_metrics = evaluate(model, val_loader, device, use_amp)
+        val_metrics = evaluate(model, val_loader, device, standardizer, use_amp)
         print(
             f"epoch {epoch:02d}  train_loss={total_loss / len(train_set):.4f}  "
             f"val_acc={val_metrics['accuracy']:.4f}  val_f1={val_metrics['f1']:.4f}"
