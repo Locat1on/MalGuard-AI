@@ -13,6 +13,8 @@ import os
 import pickle
 import sys
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2].parent
@@ -164,6 +166,25 @@ class Predictor:
         self.models_loaded = self._try_load_models()
         self.family_model_loaded = self._try_load_family_model()
 
+    def _disable_core_models(self, error: Exception) -> None:
+        self.models_loaded = False
+        self.model_load_error = (
+            f"运行时推理失败（{type(error).__name__}: {error}）。请检查模型产物并重启服务。"
+        )
+
+    @contextmanager
+    def _core_inference_guard(self) -> Iterator[None]:
+        try:
+            yield
+        except FeatureExtractionError:
+            raise
+        except ModelUnavailableError as error:
+            self._disable_core_models(error)
+            raise
+        except Exception as error:
+            self._disable_core_models(error)
+            raise ModelUnavailableError(self.model_load_error) from error
+
     def _try_load_family_model(self) -> bool:
         try:
             return self._load_family_model()
@@ -311,7 +332,8 @@ class Predictor:
 
     def predict(self, filename: str, content: bytes) -> DetectionResult:
         if self.models_loaded:
-            return self._real_predict(filename, content)
+            with self._core_inference_guard():
+                return self._real_predict(filename, content)
         if self.stub_enabled:
             return self._stub_predict(filename, content)
         raise ModelUnavailableError(self.model_load_error or "检测模型 checkpoint 不完整。")
@@ -342,7 +364,7 @@ class Predictor:
         if features.ndim != 2 or len(features) != len(filenames):
             raise ValueError("filenames and feature_rows must form an aligned 2D batch")
 
-        with self._inference_slots:
+        with self._core_inference_guard(), self._inference_slots:
             lgbm_scores = _validate_probability_vector(
                 self.lgbm_model.predict(features), len(filenames), "LightGBM"
             )

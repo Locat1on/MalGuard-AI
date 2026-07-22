@@ -31,7 +31,7 @@ cd webapp/backend
 ```
 
 > **Linux / macOS** 把 `..\..\.venv\Scripts\python.exe` 换成 `../../.venv/bin/python`。
-后端启动后可访问 `GET /api/health` 查看可选组件状态，使用 `GET /api/ready` 判断核心模型是否可用于真实检测。checkpoint 缺失、架构不兼容，或 LightGBM/scaler 不是 2568 维时，`ready=false` 且检测接口返回 503；模型运行时返回非有限值、越界概率及错误形状也会拒绝生成结论；仅纯接口联调时可显式设置 `ALLOW_STUB_PREDICTIONS=1`，正式演示不要启用。
+后端启动后可访问 `GET /api/health` 查看可选组件状态，使用 `GET /api/ready` 判断核心模型是否可用于真实检测。checkpoint 缺失、架构不兼容，或 LightGBM/scaler 不是 2568 维时，`ready=false` 且检测接口返回 503；模型运行时返回非有限值、越界概率、错误形状，或 scaler/CUDA/前向过程异常时也会返回 503，并将核心模型状态置为未就绪，直到修复产物并重启服务；仅纯接口联调时可显式设置 `ALLOW_STUB_PREDICTIONS=1`，正式演示不要启用。
 
 后端启动时会校验以下可选环境变量，值不合法会直接拒绝启动：
 

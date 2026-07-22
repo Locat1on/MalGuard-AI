@@ -615,6 +615,56 @@ class PredictorReliabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelUnavailableError, "checkpoint mismatch"):
             instance.predict("sample.exe", b"MZ")
 
+    def test_unexpected_core_runtime_failure_disables_models(self) -> None:
+        instance = Predictor.__new__(Predictor)
+        instance.models_loaded = True
+        instance.stub_enabled = False
+        instance.model_load_error = None
+
+        def fail_prediction(filename: str, content: bytes) -> DetectionResult:
+            raise RuntimeError("CUDA failure")
+
+        instance._real_predict = fail_prediction
+        with self.assertRaisesRegex(ModelUnavailableError, "运行时推理失败"):
+            instance.predict("sample.exe", b"MZ")
+        self.assertFalse(instance.models_loaded)
+        self.assertIn("RuntimeError: CUDA failure", instance.model_load_error)
+
+        instance.models_loaded = True
+
+        def fail_extraction(filename: str, content: bytes) -> DetectionResult:
+            raise FeatureExtractionError("invalid PE")
+
+        instance._real_predict = fail_extraction
+        with self.assertRaisesRegex(FeatureExtractionError, "invalid PE"):
+            instance.predict("sample.exe", b"MZ")
+        self.assertTrue(instance.models_loaded)
+
+    def test_batch_runtime_failure_disables_models(self) -> None:
+        class FakeLightGBM:
+            @staticmethod
+            def predict(features):
+                return np.full(len(features), 0.5)
+
+        class BrokenScaler:
+            @staticmethod
+            def transform(features):
+                raise RuntimeError("scaler failure")
+
+        instance = Predictor.__new__(Predictor)
+        instance.models_loaded = True
+        instance.model_load_error = None
+        instance.lgbm_model = FakeLightGBM()
+        instance.scaler = BrokenScaler()
+        instance._inference_slots = threading.BoundedSemaphore(1)
+
+        with self.assertRaisesRegex(ModelUnavailableError, "运行时推理失败"):
+            instance.predict_features_ml_only(
+                ["sample.exe"], [np.array([0.1, 0.2], dtype=np.float32)]
+            )
+        self.assertFalse(instance.models_loaded)
+        self.assertIn("RuntimeError: scaler failure", instance.model_load_error)
+
     def test_vectorized_predictor_calls_each_model_once(self) -> None:
         class FakeLightGBM:
             def __init__(self) -> None:
@@ -704,6 +754,7 @@ class PredictorReliabilityTests(unittest.TestCase):
             np.array([[0.9]]),
         ):
             with self.subTest(lightgbm_output=invalid_output):
+                instance.models_loaded = True
                 instance.lgbm_model = FakeLightGBM(invalid_output)
                 with self.assertRaisesRegex(ModelUnavailableError, "LightGBM"):
                     instance.predict_features_ml_only(["sample.exe"], features)
@@ -713,6 +764,7 @@ class PredictorReliabilityTests(unittest.TestCase):
         with self.assertRaisesRegex(ModelUnavailableError, "LightGBM"):
             instance._score(b"MZ")
 
+        instance.models_loaded = True
         instance.lgbm_model = FakeLightGBM(np.array([0.9]))
         instance.mlp_model = FakeMLP(float("nan"))
         with self.assertRaisesRegex(ModelUnavailableError, "MLP"):
@@ -943,18 +995,23 @@ class PredictorReliabilityTests(unittest.TestCase):
         predictor = sys.modules["app.routers.detect"].predictor
         with (
             patch.object(predictor, "models_loaded", True),
+            patch.object(predictor, "model_load_error", None),
             patch.object(
                 predictor,
-                "predict",
-                side_effect=ModelUnavailableError("LightGBM 推理输出无效。"),
+                "_real_predict",
+                side_effect=RuntimeError("CUDA failure"),
             ),
         ):
             response = client.post(
                 "/api/detect",
                 files={"file": ("sample.exe", b"MZ", "application/octet-stream")},
             )
+            health_response = client.get("/api/health")
+
         self.assertEqual(response.status_code, 503)
-        self.assertIn("LightGBM", response.json()["detail"])
+        self.assertIn("运行时推理失败", response.json()["detail"])
+        self.assertFalse(health_response.json()["ready"])
+        self.assertIn("RuntimeError: CUDA failure", health_response.json()["modelLoadError"])
 
     def test_analysis_layer_failure_does_not_block_core_detection(self) -> None:
         class Summary:
