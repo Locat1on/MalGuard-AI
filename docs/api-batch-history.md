@@ -142,7 +142,7 @@ interface HealthStatus {
   modelLoadError: string | null;
   familyModelLoadError: string | null;
   modelProvenanceVerified: boolean | null; // 当前三项核心 artifact 是否匹配正式评估哈希
-  modelProvenanceWarning: string | null;   // 清单缺失、损坏或模型漂移时的说明
+  modelProvenanceWarning: string | null;   // 清单缺失/无效或模型漂移时的说明
   inferenceConcurrency: number;             // 共享模型允许的并发推理数，默认 1
   detectionConcurrency: number;             // 每进程完整检测请求并发上限，默认 2
   apiKeyRequired: boolean;                   // 是否要求受保护接口携带 X-API-Key
@@ -153,7 +153,7 @@ interface HealthStatus {
 
 家族分类是可选组件：加载后若前向抛出异常，或返回非有限值、错误形状及概率和不为 1 的分布，后端会自动将 `familyModelLoaded` 置为 `false`，在 `familyModelLoadError` 中记录原因，并让本次及后续结果的 `family` / `familyConfidence` 返回 `null`；核心二分类结果与 `/api/ready` 不受影响。
 
-`modelProvenanceVerified=false` 不会阻断检测，但表示当前加载的 `lightgbm.txt`、`mlp.pt` 或 `scaler.pkl` 与 `evaluation_manifest.json` 不一致，此时指标页不能把现有正式分数视为当前部署模型的成绩；应重新运行 `src/eval/compare_models.py`。值为 `null` 表示缺少或无法读取来源清单。
+`modelProvenanceVerified=false` 不会阻断检测，但表示当前加载的 `lightgbm.txt`、`mlp.pt` 或 `scaler.pkl` 与完整的 `evaluation_manifest.json` 不一致，此时指标页不能把现有正式分数视为当前部署模型的成绩；应重新运行 `src/eval/compare_models.py`。值为 `null` 表示清单缺失、无法读取、字段不完整或协议/计数自相矛盾。健康状态与两个 metrics 接口复用同一套清单校验。
 
 `inferenceConcurrency` 只描述共享模型前向并发上限；单 GPU 默认值 1 用于降低显存争用风险。`detectionConcurrency` 则覆盖 multipart 解析、特征提取、模型推理、单文件 LLM 和历史写入的完整请求生命周期，默认每进程 2 个。
 

@@ -22,7 +22,12 @@ import lightgbm as lgb
 import numpy as np
 import torch
 
-from app.schemas import AttckTag, DetectionResult, FeatureAttention
+from app.schemas import (
+    AttckTag,
+    DetectionResult,
+    EvaluationManifest,
+    FeatureAttention,
+)
 from app.settings import settings
 from src.config import load_config
 from src.features.extract import SEGMENT_DIMS, extract_features
@@ -63,16 +68,16 @@ def verify_evaluated_artifacts(
     if not manifest_path.exists():
         return None, "缺少 evaluation_manifest.json，无法核验当前模型与正式指标的一致性。"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        expected = manifest["artifacts"]
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = EvaluationManifest.model_validate(data)
         mismatches = []
         for name, path in artifacts.items():
-            expected_hash = expected.get(name, {}).get("sha256")
-            if not expected_hash:
+            expected = manifest.artifacts.get(name)
+            if expected is None:
                 mismatches.append(f"{name} 缺少评估哈希")
-            elif sha256_file(path) != expected_hash:
+            elif sha256_file(path) != expected.sha256:
                 mismatches.append(f"{name} 与评估版本不一致")
-    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         return None, f"评估来源清单不可用（{type(error).__name__}: {error}）。"
     if mismatches:
         return False, "；".join(mismatches) + "。请重新运行正式评估。"

@@ -545,10 +545,12 @@ class PredictorReliabilityTests(unittest.TestCase):
             artifact.write_bytes(b"evaluated checkpoint")
             digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
             manifest = root / "evaluation_manifest.json"
-            manifest.write_text(
-                json.dumps({"artifacts": {"model.bin": {"sha256": digest}}}),
-                encoding="utf-8",
-            )
+            payload = _evaluation_manifest()
+            payload["artifacts"]["model.bin"] = {
+                "sha256": digest,
+                "size_bytes": artifact.stat().st_size,
+            }
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
 
             verified, warning = verify_evaluated_artifacts(
                 manifest, {"model.bin": artifact}
@@ -562,6 +564,16 @@ class PredictorReliabilityTests(unittest.TestCase):
             )
             self.assertFalse(verified)
             self.assertIn("不一致", warning)
+
+            manifest.write_text(
+                json.dumps({"artifacts": payload["artifacts"]}),
+                encoding="utf-8",
+            )
+            verified, warning = verify_evaluated_artifacts(
+                manifest, {"model.bin": artifact}
+            )
+            self.assertIsNone(verified)
+            self.assertIn("来源清单不可用", warning)
 
             verified, warning = verify_evaluated_artifacts(
                 root / "missing.json", {"model.bin": artifact}
