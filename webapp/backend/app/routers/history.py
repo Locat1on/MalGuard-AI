@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
 from app import history
-from app.schemas import HistoryRecord
+from app.schemas import HistoryRecord, HistoryStats
 
 router = APIRouter()
 
@@ -15,6 +15,10 @@ async def list_history(
 ) -> list[dict]:
     return await run_in_threadpool(history.list_recent, limit, offset)
 
+
+@router.get("/history/stats", response_model=HistoryStats)
+async def get_history_stats() -> dict:
+    return await run_in_threadpool(history.stats)
 
 @router.get("/history/{detection_id}", response_model=HistoryRecord)
 async def get_history(detection_id: int) -> dict:

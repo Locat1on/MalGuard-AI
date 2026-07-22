@@ -3,12 +3,13 @@
 Real path: extract EMBER-schema features from the uploaded PE file (src/features/extract.py),
 run the trained LightGBM + MLP models (checkpoints/), and report agreement between the two.
 
-Falls back to a clearly-labeled stub if the checkpoints don't exist yet, so the API contract
-can still be exercised end-to-end from the frontend without a trained model.
+A hash-based stub exists only for explicit interface development via
+ALLOW_STUB_PREDICTIONS=1; normal runs fail visibly when real checkpoints are unavailable.
 """
 
 import hashlib
 import json
+import os
 import pickle
 import sys
 from pathlib import Path
@@ -29,8 +30,8 @@ from src.models.mlp import MalwareMLP
 
 CHECKPOINTS_DIR = PROJECT_ROOT / "checkpoints"
 
-# Human-readable Chinese labels for the 12 EMBER feature groups, so the attention-weight
-# explanation is display-ready without the frontend hardcoding this mapping.
+# Human-readable Chinese labels for the 12 EMBER feature groups, so the fusion-weight
+# signal is display-ready without the frontend hardcoding this mapping.
 FEATURE_GROUP_LABELS = {
     "general": "通用文件属性",
     "histogram": "字节直方图",
@@ -47,6 +48,10 @@ FEATURE_GROUP_LABELS = {
 }
 
 
+class ModelUnavailableError(Exception):
+    """Raised when real detector checkpoints are unavailable or incompatible."""
+
+
 class FeatureExtractionError(Exception):
     """Raised when a file's PE structure could not be parsed into a feature vector.
 
@@ -59,13 +64,23 @@ class FeatureExtractionError(Exception):
 
 class Predictor:
     def __init__(self) -> None:
-        # Set before either _try_load_* call: the family model needs a device even if the
-        # binary models fail to load (independent optional checkpoints).
+        # Stub output is opt-in: normal runs must fail visibly when real checkpoints are absent
+        # instead of returning plausible-looking hash-based fake detections.
+        self.stub_enabled = os.environ.get("ALLOW_STUB_PREDICTIONS") == "1"
+        self.model_load_error: str | None = None
+        self.family_model_load_error: str | None = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.models_loaded = self._try_load_models()
         self.family_model_loaded = self._try_load_family_model()
 
     def _try_load_family_model(self) -> bool:
+        try:
+            return self._load_family_model()
+        except Exception as e:
+            self.family_model_load_error = f"{type(e).__name__}: {e}"
+            return False
+
+    def _load_family_model(self) -> bool:
         """Optional: the family classifier is a separate, later-added model (see
         src/models/train_family.py). Detection itself must keep working even if it hasn't been
         trained yet — `predict()` just reports family=None in that case.
@@ -77,6 +92,7 @@ class Predictor:
         family_model_path = CHECKPOINTS_DIR / "family_mlp.pt"
         family_labels_path = CHECKPOINTS_DIR / "family_labels.json"
         if not (family_model_path.exists() and family_labels_path.exists()):
+            self.family_model_load_error = "缺少 family_mlp.pt 或 family_labels.json。"
             return False
 
         with open(family_labels_path, encoding="utf-8") as f:
@@ -116,10 +132,18 @@ class Predictor:
         return name, round(confidence, 4)
 
     def _try_load_models(self) -> bool:
+        try:
+            return self._load_models()
+        except Exception as e:
+            self.model_load_error = f"{type(e).__name__}: {e}"
+            return False
+
+    def _load_models(self) -> bool:
         lightgbm_path = CHECKPOINTS_DIR / "lightgbm.txt"
         mlp_path = CHECKPOINTS_DIR / "mlp.pt"
         scaler_path = CHECKPOINTS_DIR / "scaler.pkl"
         if not (lightgbm_path.exists() and mlp_path.exists() and scaler_path.exists()):
+            self.model_load_error = "缺少 lightgbm.txt、mlp.pt 或 scaler.pkl。"
             return False
 
         self.lgbm_model = lgb.Booster(model_file=str(lightgbm_path))
@@ -141,7 +165,9 @@ class Predictor:
     def predict(self, filename: str, content: bytes) -> DetectionResult:
         if self.models_loaded:
             return self._real_predict(filename, content)
-        return self._stub_predict(filename, content)
+        if self.stub_enabled:
+            return self._stub_predict(filename, content)
+        raise ModelUnavailableError(self.model_load_error or "检测模型 checkpoint 不完整。")
 
     def predict_ml_only(self, filename: str, content: bytes) -> DetectionResult:
         """Batch path: the two ML models (+ optional family) only, no LLM/ATT&CK.
@@ -152,7 +178,9 @@ class Predictor:
         skipping the expensive analysis layer.
         """
         if not self.models_loaded:
-            return self._stub_predict(filename, content)
+            if self.stub_enabled:
+                return self._stub_predict(filename, content)
+            raise ModelUnavailableError(self.model_load_error or "检测模型 checkpoint 不完整。")
 
         # batch skips the attention detail
         p_lgbm, p_mlp, is_malicious, family, family_confidence, _ = self._score(content)
@@ -178,7 +206,7 @@ class Predictor:
     def _score(
         self, content: bytes
     ) -> tuple[float, float, bool, str | None, float | None, list[FeatureAttention]]:
-        """Feature extraction + both ML models + optional family + MLP attention. No LLM.
+        """Feature extraction + both ML models + optional family + MLP fusion weights. No LLM.
 
         Shared by single-file (`_real_predict`) and batch (`predict_ml_only`) so the two paths
         can never diverge on how the verdict itself is computed. Returns

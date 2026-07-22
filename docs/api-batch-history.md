@@ -12,7 +12,7 @@ historyId: number | null;  // 本次检测在历史库中的记录 id；stub 模
 
 拿到 `historyId` 后即可直接跳转 `GET /api/history/{historyId}/report` 导出报告。
 
-另新增 `featureAttention` 字段——**模型判定依据**（真实可解释性，`gradcamUrl` 仍为 `null`）：
+另新增 `featureAttention` 字段——**模型内部的特征组融合权重**（`gradcamUrl` 仍为 `null`）：
 
 ```ts
 interface FeatureAttention {
@@ -24,7 +24,7 @@ interface FeatureAttention {
 featureAttention: FeatureAttention[] | null;  // 单文件检测时有 12 项；批量为 null
 ```
 
-MLP 在融合 12 个特征组时对每组算了一个 softmax 注意力权重，`featureAttention` 就是这组权重——即"模型主要看了哪些特征做出判定"。建议前端按 `weight` 排序画一个条形图（取 Top-N 即可）。
+MLP 在融合 12 个特征组时对每组算了一个 softmax 注意力权重，`featureAttention` 就是这组权重——可用于观察模型在本次融合时更重视哪些特征组，但它不是因果归因，不能表述成“某特征导致了该判定”。建议前端按 `weight` 排序画条形图（取 Top-N 即可），标题使用“特征组融合权重”。
 
 再新增 `familyConfidence` 字段，与已有的 `family` 配套：
 
@@ -117,3 +117,41 @@ interface HistoryRecord {
 `DELETE /api/history/{id}` → `{ "deleted": true }`（不存在返回 404）
 
 `DELETE /api/history` → `{ "deleted": <删除条数> }`（清空全部）
+## 6. 服务状态（新增）
+
+`GET /api/health` 始终用于存活检查，并返回组件状态：
+
+```ts
+interface HealthStatus {
+  ok: boolean;
+  ready: boolean;              // 核心 LightGBM + MLP 是否可用于真实检测
+  mode: "real" | "stub" | "unavailable";
+  modelsLoaded: boolean;
+  familyModelLoaded: boolean;  // 可选组件，不影响 ready
+  llmConfigured: boolean;      // 可选组件，不影响 ready
+  modelLoadError: string | null;
+  familyModelLoadError: string | null;
+}
+```
+
+`GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失或架构不兼容时，检测接口也返回 503，不再默认返回伪造结果。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
+
+## 7. 历史统计（新增）
+
+`GET /api/history/stats` →：
+
+```ts
+interface HistoryStats {
+  total: number;
+  malicious: number;
+  benign: number;
+  single: number;
+  batch: number;
+  modelDisagreements: number;
+  llmCompared: number;
+  llmDisagreements: number;
+  lastCreatedAt: string | null;
+}
+```
+
+这些数据来自 SQLite 聚合，可用于历史页顶部的紧凑统计区。`llmDisagreements / llmCompared` 才是有意义的 LLM 分歧率，批量检测未运行 LLM，不应进入分母。

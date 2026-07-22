@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from app import history
-from app.predictor import FeatureExtractionError, predictor
+from app.predictor import FeatureExtractionError, ModelUnavailableError, predictor
 from app.schemas import BatchDetectionResult, BatchItem, DetectionResult
 
 router = APIRouter()
@@ -25,6 +25,13 @@ class FileTooLargeError(Exception):
     turns it into a per-file failure item so one oversized file doesn't sink the whole batch."""
 
 
+def _require_detector() -> None:
+    if not predictor.models_loaded and not predictor.stub_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=predictor.model_load_error or "检测模型当前不可用。",
+        )
+
 async def _read_capped(file: UploadFile) -> bytes:
     """Read an upload, rejecting anything over MAX_UPLOAD_BYTES before it is fully buffered."""
     if file.size is not None and file.size > MAX_UPLOAD_BYTES:
@@ -39,6 +46,7 @@ async def _read_capped(file: UploadFile) -> bytes:
 
 @router.post("/detect", response_model=DetectionResult)
 async def detect(file: UploadFile) -> DetectionResult:
+    _require_detector()
     try:
         content = await _read_capped(file)
     except FileTooLargeError as e:
@@ -48,6 +56,8 @@ async def detect(file: UploadFile) -> DetectionResult:
         result = await run_in_threadpool(predictor.predict, filename, content)
     except FeatureExtractionError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except ModelUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     # Persist only genuine detections — the hash-based stub (models not loaded) is not recorded,
     # so history reflects real model output only.
@@ -73,6 +83,7 @@ async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
     items rather than failing the whole request, so one bad file in a folder doesn't sink the
     rest of the batch.
     """
+    _require_detector()
     if not files:
         raise HTTPException(status_code=400, detail="未收到任何文件。")
     if len(files) > MAX_BATCH_FILES:

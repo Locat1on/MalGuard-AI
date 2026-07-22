@@ -11,6 +11,7 @@ multiple worker threads — a connection per call sidesteps that without a conne
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -22,14 +23,17 @@ DB_PATH = PROJECT_ROOT / "data" / "history.db"
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
+        conn.execute("PRAGMA journal_mode = WAL")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS detections (
@@ -90,7 +94,7 @@ def _row_values(result: DetectionResult, source: str, sha256: str) -> tuple:
 
 def record(result: DetectionResult, source: str, sha256: str) -> int:
     """Persist one detection, returning its new row id."""
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute(_INSERT_SQL, _row_values(result, source, sha256))
         return int(cur.lastrowid)
 
@@ -102,7 +106,7 @@ def record_many(entries: list[tuple[DetectionResult, str]], source: str) -> list
     can be captured — a batch scan needs every item's history id back to build its response.
     """
     ids: list[int] = []
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         for result, sha256 in entries:
             cur = conn.execute(_INSERT_SQL, _row_values(result, source, sha256))
             ids.append(int(cur.lastrowid))
@@ -132,7 +136,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 
 def list_recent(limit: int, offset: int) -> list[dict]:
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         rows = conn.execute(
             "SELECT * FROM detections ORDER BY id DESC LIMIT ? OFFSET ?",
             (limit, offset),
@@ -140,20 +144,51 @@ def list_recent(limit: int, offset: int) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def stats() -> dict:
+    """Aggregate persisted detections for a lightweight dashboard summary."""
+    with closing(_connect()) as conn, conn:
+        row = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(verdict = 'malicious'), 0) AS malicious,
+                COALESCE(SUM(verdict = 'benign'), 0) AS benign,
+                COALESCE(SUM(source = 'single'), 0) AS single_count,
+                COALESCE(SUM(source = 'batch'), 0) AS batch_count,
+                COALESCE(SUM(model_agreement = 'disagree'), 0) AS model_disagreements,
+                COALESCE(SUM(llm_verdict IS NOT NULL), 0) AS llm_compared,
+                COALESCE(SUM(llm_verdict IS NOT NULL AND llm_verdict != verdict), 0)
+                    AS llm_disagreements,
+                MAX(created_at) AS last_created_at
+            FROM detections
+            """
+        ).fetchone()
+    return {
+        "total": row["total"],
+        "malicious": row["malicious"],
+        "benign": row["benign"],
+        "single": row["single_count"],
+        "batch": row["batch_count"],
+        "modelDisagreements": row["model_disagreements"],
+        "llmCompared": row["llm_compared"],
+        "llmDisagreements": row["llm_disagreements"],
+        "lastCreatedAt": row["last_created_at"],
+    }
+
 def get(detection_id: int) -> dict | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         row = conn.execute("SELECT * FROM detections WHERE id = ?", (detection_id,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
 def delete(detection_id: int) -> bool:
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute("DELETE FROM detections WHERE id = ?", (detection_id,))
         return cur.rowcount > 0
 
 
 def clear() -> int:
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         cur = conn.execute("DELETE FROM detections")
         return cur.rowcount
 
@@ -230,7 +265,7 @@ def render_report_html(rec: dict) -> str:
   </div>
   <h2>ATT&amp;CK 标签</h2>
   {attck_table}
-  <h2>LLM 行为分析</h2>
+  <h2>LLM 静态风险说明</h2>
   <div class="report">{report_text}</div>
 </body>
 </html>"""

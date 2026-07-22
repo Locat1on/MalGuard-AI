@@ -11,9 +11,11 @@ class AttckTag(BaseModel):
 
 
 class FeatureAttention(BaseModel):
-    """One of the MLP's 12 feature groups and the softmax attention weight it received while
-    fusing this sample — i.e. how much this group drove the model's decision. The weights over
-    all 12 groups sum to 1. This is the real explainability signal (gradcamUrl stays None)."""
+    """One of the MLP's 12 feature groups and its softmax fusion weight for this sample.
+
+    The 12 weights sum to 1. They are a useful model-internal diagnostic signal, not a
+    causal attribution of why the verdict occurred.
+    """
 
     group: str   # raw EMBER group name, e.g. "imports"
     label: str   # human-readable Chinese label for display
@@ -88,6 +90,29 @@ class HistoryRecord(BaseModel):
     llmConfidence: float | None
     llmReport: str
     attck: list[AttckTag]
+
+
+class HealthStatus(BaseModel):
+    ok: bool
+    ready: bool
+    mode: Literal["real", "stub", "unavailable"]
+    modelsLoaded: bool
+    familyModelLoaded: bool
+    llmConfigured: bool
+    modelLoadError: str | None
+    familyModelLoadError: str | None
+
+
+class HistoryStats(BaseModel):
+    total: int
+    malicious: int
+    benign: int
+    single: int
+    batch: int
+    modelDisagreements: int
+    llmCompared: int
+    llmDisagreements: int
+    lastCreatedAt: str | None
 
 
 class ModelMetric(BaseModel):
