@@ -300,6 +300,35 @@ class PredictorReliabilityTests(unittest.TestCase):
             self.assertFalse(instance._try_load_models())
         self.assertEqual(instance.model_load_error, "RuntimeError: bad checkpoint")
 
+    def test_invalid_family_vocabulary_disables_family_model(self) -> None:
+        invalid_vocabularies = (
+            [],
+            ["其他"],
+            ["Example", "", "其他"],
+            ["Example", "Example", "其他"],
+            ["其他", "Example"],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_dir = Path(directory)
+            (checkpoint_dir / "family_mlp.pt").write_bytes(b"not-loaded")
+            labels_path = checkpoint_dir / "family_labels.json"
+
+            for labels in invalid_vocabularies:
+                with self.subTest(labels=labels):
+                    labels_path.write_text(
+                        json.dumps(labels, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    instance = Predictor.__new__(Predictor)
+                    instance.family_model_load_error = None
+                    instance.device = torch.device("cpu")
+                    with patch("app.predictor.CHECKPOINTS_DIR", checkpoint_dir):
+                        self.assertFalse(instance._try_load_family_model())
+                    self.assertIn(
+                        "family_labels.json",
+                        instance.family_model_load_error,
+                    )
+
     def test_deployed_artifact_provenance_detects_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
