@@ -12,6 +12,7 @@ from app.upload_limits import MAX_BATCH_FILES, MAX_BATCH_PAYLOAD_BYTES, MAX_UPLO
 
 router = APIRouter()
 BATCH_LOGGER = logging.getLogger("malguard.batch")
+HISTORY_LOGGER = logging.getLogger("malguard.history")
 
 # predictor.predict() runs GPU inference plus a synchronous OpenRouter LLM call on every
 # request (see src/llm/report.py) — well over what's reasonable to block the single-threaded
@@ -62,7 +63,14 @@ async def detect(file: UploadFile) -> DetectionResult:
     # so history reflects real model output only.
     if predictor.models_loaded:
         sha256 = hashlib.sha256(content).hexdigest()
-        result.historyId = await run_in_threadpool(history.record, result, "single", sha256)
+        try:
+            result.historyId = await run_in_threadpool(
+                history.record, result, "single", sha256
+            )
+        except Exception as error:
+            HISTORY_LOGGER.exception(
+                "single detection history write failed: %s", type(error).__name__
+            )
     return result
 
 
@@ -192,15 +200,21 @@ async def detect_batch(files: list[UploadFile]) -> BatchDetectionResult:
             to_record.append((position, result, file_hash))
 
     if to_record:
-        history_ids = await run_in_threadpool(
-            history.record_many,
-            [(result, file_hash) for _, result, file_hash in to_record],
-            "batch",
-        )
-        for (position, _, _), history_id in zip(to_record, history_ids):
-            item = items[position]
-            if item is not None:
-                item.historyId = history_id
+        try:
+            history_ids = await run_in_threadpool(
+                history.record_many,
+                [(result, file_hash) for _, result, file_hash in to_record],
+                "batch",
+            )
+        except Exception as error:
+            HISTORY_LOGGER.exception(
+                "batch detection history write failed: %s", type(error).__name__
+            )
+        else:
+            for (position, _, _), history_id in zip(to_record, history_ids):
+                item = items[position]
+                if item is not None:
+                    item.historyId = history_id
 
     if any(item is None for item in items):
         raise RuntimeError("batch result alignment invariant failed")

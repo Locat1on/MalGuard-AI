@@ -39,8 +39,8 @@ class DetectionResult(BaseModel):
     mlpScore: float
     llmVerdict: Verdict | None
     llmConfidence: float | None
-    # Row id of this detection in the history store (None only for the stub path, which is
-    # not persisted). Lets the frontend link straight to GET /api/history/{id}/report.
+    # Row id in the history store. None for stub output or when persistence failed after a
+    # genuine detection; the ML result remains valid but cannot link to a saved report.
     historyId: int | None = None
     # Per-feature-group attention weights (the model's "why"). Populated on single-file
     # detection; None on the batch path, which skips the analysis layer.

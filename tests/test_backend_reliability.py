@@ -810,6 +810,63 @@ class PredictorReliabilityTests(unittest.TestCase):
             [101, None, 102],
         )
 
+    def test_single_detection_survives_history_write_failure(self) -> None:
+        client = TestClient(app)
+        detect_module = sys.modules["app.routers.detect"]
+        predictor = detect_module.predictor
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(predictor, "predict", return_value=_result()),
+            patch.object(
+                history,
+                "record",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ),
+            self.assertLogs("malguard.history", level="ERROR"),
+        ):
+            response = client.post(
+                "/api/detect",
+                files={"file": ("sample.exe", b"MZ", "application/octet-stream")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["verdict"], "malicious")
+        self.assertIsNone(response.json()["historyId"])
+
+    def test_batch_detection_survives_history_write_failure(self) -> None:
+        client = TestClient(app)
+        detect_module = sys.modules["app.routers.detect"]
+        predictor = detect_module.predictor
+        with (
+            patch.object(predictor, "models_loaded", True),
+            patch.object(
+                predictor,
+                "extract_feature_vector",
+                return_value=np.array([1, 2], dtype=np.float32),
+            ),
+            patch.object(
+                predictor,
+                "predict_features_ml_only",
+                return_value=[_result()],
+            ),
+            patch.object(
+                history,
+                "record_many",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ),
+            self.assertLogs("malguard.history", level="ERROR"),
+        ):
+            response = client.post(
+                "/api/detect/batch",
+                files=[
+                    ("files", ("sample.exe", b"MZ", "application/octet-stream"))
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["verdict"], "malicious")
+        self.assertIsNone(response.json()["items"][0]["historyId"])
+
     def test_non_pe_upload_is_rejected_before_model_inference(self) -> None:
         client = TestClient(app)
         predictor = sys.modules["app.routers.detect"].predictor

@@ -32,7 +32,7 @@
 现状：后端检测成功时已经写入 SQLite，`App.tsx` 又通过 `toHistoryEntry()` 生成随机 ID 并追加本地记录；刷新后会从后端重新加载，容易出现身份不一致或重复。
 
 建议：
-- 检测成功后使用响应中的 `historyId`，或直接重新请求 `GET /api/history`。
+- 检测成功后使用响应中的 `historyId`，或直接重新请求 `GET /api/history`。`historyId=null` 表示本次结果未保存（例如 SQLite 暂时不可写），仍应展示检测结论，但要显示“结果未保存”，并隐藏报告链接。
 - 删除 `Date.now() + Math.random()` 生成历史 ID 的逻辑。
 - HistoryPage 文案改为“记录保存在后端，刷新后仍可查看”，不再写“仅保存在当前浏览器会话”。
 
