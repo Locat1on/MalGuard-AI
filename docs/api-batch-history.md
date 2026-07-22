@@ -149,7 +149,7 @@ interface HealthStatus {
 }
 ```
 
-`GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失、架构不兼容，或 LightGBM/MLP 返回非有限值、越界概率及错误形状时，检测接口也返回 503，不再默认返回伪造结果或形成不可信结论。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
+`GET /api/ready` 返回同一结构；核心模型可用时为 200，否则为 503。checkpoint 缺失、架构不兼容，或 LightGBM/scaler 的特征维度不是 EMBER 所需的 2568 时，启动加载阶段即令 `ready=false` 并通过 `modelLoadError` 说明原因；LightGBM/MLP 运行时返回非有限值、越界概率及错误形状时，检测接口也返回 503，不再默认返回伪造结果或形成不可信结论。只有显式设置 `ALLOW_STUB_PREDICTIONS=1` 才启用联调用 stub。
 
 家族分类是可选组件：加载后若前向抛出异常，或返回非有限值、错误形状及概率和不为 1 的分布，后端会自动将 `familyModelLoaded` 置为 `false`，在 `familyModelLoadError` 中记录原因，并让本次及后续结果的 `family` / `familyConfidence` 返回 `null`；核心二分类结果与 `/api/ready` 不受影响。
 

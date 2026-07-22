@@ -29,6 +29,7 @@ from app.predictor import (
     FeatureExtractionError,
     ModelUnavailableError,
     Predictor,
+    validate_core_feature_contract,
     verify_evaluated_artifacts,
 )
 from app.schemas import AttckTag, DetectionResult
@@ -376,6 +377,32 @@ class PredictorReliabilityTests(unittest.TestCase):
         with patch.object(Predictor, "_load_models", side_effect=RuntimeError("bad checkpoint")):
             self.assertFalse(instance._try_load_models())
         self.assertEqual(instance.model_load_error, "RuntimeError: bad checkpoint")
+
+    def test_core_feature_contract_rejects_mismatched_artifacts(self) -> None:
+        class FakeLightGBM:
+            def __init__(self, dimensions: int) -> None:
+                self.dimensions = dimensions
+
+            def num_feature(self) -> int:
+                return self.dimensions
+
+        class FakeScaler:
+            def __init__(self, dimensions: int) -> None:
+                self.n_features_in_ = dimensions
+                self.mean_ = np.zeros(dimensions)
+                self.scale_ = np.ones(dimensions)
+
+        validate_core_feature_contract(FakeLightGBM(2568), FakeScaler(2568))
+
+        with self.assertRaisesRegex(ValueError, "LightGBM checkpoint 特征维度"):
+            validate_core_feature_contract(FakeLightGBM(10), FakeScaler(2568))
+        with self.assertRaisesRegex(ValueError, "scaler 特征维度"):
+            validate_core_feature_contract(FakeLightGBM(2568), FakeScaler(10))
+
+        malformed_scaler = FakeScaler(2568)
+        malformed_scaler.scale_ = np.ones(10)
+        with self.assertRaisesRegex(ValueError, "scaler.scale_ 形状"):
+            validate_core_feature_contract(FakeLightGBM(2568), malformed_scaler)
 
     def test_invalid_family_vocabulary_disables_family_model(self) -> None:
         invalid_vocabularies = (

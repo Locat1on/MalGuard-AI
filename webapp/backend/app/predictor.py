@@ -30,7 +30,7 @@ from app.schemas import (
 )
 from app.settings import settings
 from src.config import load_config
-from src.features.extract import SEGMENT_DIMS, extract_features
+from src.features.extract import FEATURE_DIM, SEGMENT_DIMS, extract_features
 from src.llm.feature_summary import summarize
 from src.llm.report import generate_report
 from src.models.family_checkpoint import OTHER_LABEL, unpack_family_checkpoint
@@ -121,6 +121,30 @@ def _validate_probability_vector(
             f"{model_name} 推理输出包含非有限值或超出 0 到 1 的概率。"
         )
     return probabilities
+
+
+def validate_core_feature_contract(lightgbm_model: object, scaler: object) -> None:
+    """Reject checkpoint combinations that cannot consume an EMBER feature vector."""
+    try:
+        lightgbm_features = int(lightgbm_model.num_feature())
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("LightGBM checkpoint 缺少有效的特征维度元数据。") from error
+    if lightgbm_features != FEATURE_DIM:
+        raise ValueError(
+            f"LightGBM checkpoint 特征维度为 {lightgbm_features}，期望 {FEATURE_DIM}。"
+        )
+
+    scaler_features = getattr(scaler, "n_features_in_", None)
+    if scaler_features != FEATURE_DIM:
+        raise ValueError(
+            f"scaler 特征维度为 {scaler_features!r}，期望 {FEATURE_DIM}。"
+        )
+    for attribute in ("mean_", "scale_"):
+        shape = np.shape(getattr(scaler, attribute, None))
+        if shape != (FEATURE_DIM,):
+            raise ValueError(
+                f"scaler.{attribute} 形状为 {shape}，期望 {(FEATURE_DIM,)}。"
+            )
 
 
 class Predictor:
@@ -271,6 +295,7 @@ class Predictor:
 
         with open(scaler_path, "rb") as f:
             self.scaler = pickle.load(f)
+        validate_core_feature_contract(self.lgbm_model, self.scaler)
 
         self.model_provenance_verified, self.model_provenance_warning = (
             verify_evaluated_artifacts(
